@@ -10,7 +10,7 @@ import chat_duckdb  # your existing routing + LFS + WORC + permits logic
 # CONFIG
 # ------------------------------------------------------------
 
-DB_URL = "https://drive.google.com/uc?export=download&id=1t2h-XhLibkOZfn6RANOKVVXxfdPFBxSk"
+DB_URL = "https://www.dropbox.com/scl/fi/qjc8k6aol1nmirbs8u4wi/cayman_workforce.duckdb?rlkey=gm7rdiu3xzqrs9c1be0fnxqya&st=6lmvhxh9&dl=1"
 DB_PATH = Path("cayman_workforce.duckdb")
 
 # ------------------------------------------------------------
