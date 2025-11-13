@@ -95,7 +95,7 @@ Return ONLY the final written answer.
 """.strip()
 
     resp = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": "You write clear, executive-level analytical summaries."},
             {"role": "user", "content": prompt},
