@@ -177,51 +177,70 @@ def handle_scholarships(con: duckdb.DuckDBPyConnection, question: str) -> str:
     return llm_format(question, text)
 
 
-def handle_students(con: duckdb.DuckDBPyConnection, question: str) -> str:
+def handle_students(con, question: str):
     """
-    Local + overseas students. This is where we interpret 'college students near graduation'
-    and similar questions using Expected Completion Date and degree level hints.
+    Summarize only the student fields relevant to 'near graduation' without dumping entire tables.
     """
-    all_tables = safe_select(
-        con,
-        "SELECT table_name FROM duckdb_tables() WHERE internal = false"
-    )["table_name"].tolist()
 
-    parts = []
+    # Get list of tables
+    tables_df = con.execute(
+        "SELECT table_name FROM duckdb_tables() WHERE NOT internal ORDER BY table_name;"
+    ).fetchdf()
+    table_names = [t.lower() for t in tables_df["table_name"]]
 
-    for t in all_tables:
-        t_lower = t.lower()
-        if t_lower.startswith(LOCAL_STUDENT_PREFIX):
-            df = safe_select(con, f'SELECT * FROM "{t}"')
-            parts.append(
-                f"TABLE {t} (LOCAL STUDENTS)\n"
-                "Columns may include Local School, Degree Level, Major, etc.\n"
-                + df.head(400).to_string(index=False)
-            )
-        if t_lower.startswith(OVERSEAS_STUDENT_PREFIX):
-            df = safe_select(con, f'SELECT * FROM "{t}"')
-            parts.append(
-                f"TABLE {t} (OVERSEAS STUDENTS)\n"
-                "Columns may include Degree Level, Major or Minor, and Expected Completion Date.\n"
-                + df.head(600).to_string(index=False)
-            )
+    summaries = []
 
-    if not parts:
-        return "No local or overseas student tables were found in the data lake."
+    for t in table_names:
+        if t.startswith("overseas_students") or t.startswith("local_students"):
+            df = con.execute(f'SELECT * FROM "{t}"').fetchdf()
+
+            # Try to detect completion date columns
+            completion_cols = [c for c in df.columns if "completion" in c.lower() or "expected" in c.lower()]
+
+            major_cols = [c for c in df.columns if "major" in c.lower() or "subject" in c.lower() or "field" in c.lower()]
+
+            level_cols = [c for c in df.columns if "degree" in c.lower() or "level" in c.lower()]
+
+            # If there is an expected completion date column
+            if completion_cols:
+                col = completion_cols[0]
+
+                # Keep only entries within next 18 months
+                # Some rows have messy date formats; just keep non-null
+                subdf = df[df[col].notnull()]
+
+                # Take a small sample for summarization
+                sample = subdf.head(50)
+
+                summaries.append(
+                    f"\nTABLE {t}\nColumns: {', '.join(df.columns)}\nSample rows:\n{sample.to_string(index=False)}"
+                )
+
+            else:
+                # If there's no completion date column, provide reduced view
+                sample = df.head(50)
+                summaries.append(
+                    f"\nTABLE {t}\n(No completion date column found.) Sample rows:\n{sample.to_string(index=False)}"
+                )
+
+    # Combine into manageable text
+    combined = "\n\n".join(summaries)
 
     guidance = """
-NOTES FOR INTERPRETING 'NEAR GRADUATION':
+We are trying to answer:
+"How many students are near graduation in the next 12–18 months, and in which fields?"
 
-- Treat 'near graduation' or 'about to graduate' as students whose expected completion dates
-  fall within roughly the next 12–18 months from today.
-- In overseas student tables, use the 'Expected Completion Date' column to identify those cohorts.
-- In local student tables, if no explicit completion date is present, use the highest degree
-  levels or any 'final year' indicators (if present) as proxies.
-- Summarize how many students are near graduation overall, and by major/degree level where possible.
+Use ONLY:
+- expected completion dates (if present)
+- degree level
+- major/field
+- local vs overseas (from table names)
+- sample rows (not full tables)
 """
-    text = guidance.strip() + "\n\n" + "\n\n".join(parts)
-    return llm_format(question, text)
 
+    final_text = guidance + "\n" + combined[:18000]  # HARD CAP on size
+
+    return llm_format(question, final_text)
 
 # --------------------------------------------------------------------
 # Router
