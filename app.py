@@ -1,123 +1,186 @@
 import streamlit as st
-from pathlib import Path
 import duckdb
-import urllib.request
-import os
+from PIL import Image
+import requests
+from io import BytesIO
+from chat_duckdb import route
 
-# Import your logic file
-import chat_duckdb
 
-# ------------------------------------------------------------
-# CONFIG
-# ------------------------------------------------------------
-DB_URL = "https://www.dropbox.com/scl/fi/1q2ihrpxonjqr5gmd0e6j/cayman_workforce.duckdb?rlkey=shcsg8q5j6jq8nlura4jka6sa&st=2bsoya5s&dl=1"
-DB_PATH = Path("cayman_workforce.duckdb")
+############################################################
+#              DATABASE LOADING FUNCTION
+############################################################
 
-# ------------------------------------------------------------
-# DOWNLOAD DATABASE (CACHED)
-# ------------------------------------------------------------
-@st.cache_resource
 def load_database():
-    if not DB_PATH.exists():
-        with st.spinner("Downloading Cayman workforce dataset…"):
-            urllib.request.urlretrieve(DB_URL, DB_PATH)
-    con = duckdb.connect(str(DB_PATH))
-    return con
+    """
+    Loads the DuckDB database from a local file or remote download.
+    This version assumes DB_PATH is pulled from Streamlit secrets.
+    """
+    DB_PATH = st.secrets["DB_URL"]
 
-# ------------------------------------------------------------
-# MAIN APP
-# ------------------------------------------------------------
-def main():
-    # Page setup
-    st.set_page_config(
-        page_title="Cayman Workforce Data Assistant",
-        page_icon="📊",
-        layout="wide"
-    )
+    # Download to temporary file if needed
+    try:
+        if DB_PATH.startswith("http"):
+            import tempfile, urllib.request
+            temp = tempfile.NamedTemporaryFile(delete=False)
+            urllib.request.urlretrieve(DB_PATH, temp.name)
+            return duckdb.connect(temp.name)
+        else:
+            return duckdb.connect(DB_PATH)
+    except Exception as e:
+        st.error(f"Error loading database: {e}")
+        raise e
 
-    # Header + Title
-    st.markdown("""
-        <div style="padding: 10px 0 0 0;">
-            <h1 style="margin-bottom:0;">Cayman Workforce Data Assistant</h1>
-            <p style="color: gray; margin-top:0;">Internal • Workforce Development Team • Cayman Islands Government</p>
-        </div>
-    """, unsafe_allow_html=True)
 
-    con = load_database()
+############################################################
+#                    SIDEBAR COMPONENTS
+############################################################
 
-    # ------------------------------------------------------------
-    # GUIDANCE PANEL (Expanded on load)
-    # ------------------------------------------------------------
-    with st.expander("📘 How to use this assistant (click to expand)", expanded=True):
-        st.markdown("""
-### Welcome
+def sidebar_content(con):
+    """Builds the left navigation sidebar."""
 
-This assistant helps you explore Cayman’s workforce landscape using the latest consolidated datasets from:
+    st.sidebar.title("Navigation")
 
-- **ESO Labour Force Survey (Fall 2024)**
-- **WORC Job Postings**
-- **Work Permit Occupations**
-- **Scholarships & Training Programs**
-- **Local + Overseas Student Pathways & Completion Data**
+    # -----------------------------
+    # Dataset List
+    # -----------------------------
+    st.sidebar.subheader("📚 Available Datasets")
 
-You may ask questions such as:
+    try:
+        tables = [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+        for t in tables:
+            st.sidebar.write(f"• {t}")
+    except:
+        st.sidebar.write("Dataset list unavailable.")
 
-- **“What is Caymanian unemployment in the latest Labour Force Survey?”**  
-- **“Which occupations rely most on work permits?”**  
-- **“Summarize job posting trends by industry over the last few years.”**  
-- **“How many students are near graduation in the next 12–18 months?”**  
-- **“What are the dominant scholarship fields of study?”**
+    st.sidebar.markdown("---")
 
-### Tips for Best Results
-- Ask **one specific question at a time**  
-- The assistant will summarize large datasets for you  
-- Data-heavy queries (like student completion data) may take a few seconds  
-- Scroll up to review your conversation history  
+    # -----------------------------
+    # Capabilities
+    # -----------------------------
+    st.sidebar.subheader("⚙️ Capabilities")
+    st.sidebar.write("""
+    - 📊 Interactive Plotly Charts  
+    - 📈 Multi-year Trend Analysis  
+    - 📋 Table Extraction  
+    - 🧠 Executive Narrative Engine  
+    - 📝 Multi-source Workforce Reporting  
+    - 🔎 Cross-dataset Reasoning  
+    """)
 
-If anything looks off, rephrase the question more specifically — you are helping shape the next version of this tool.
-""")
+    st.sidebar.markdown("---")
+
+    # -----------------------------
+    # Recommended Prompts
+    # -----------------------------
+    st.sidebar.subheader("💡 Recommended Prompts")
+
+    st.sidebar.write("""
+    **Charts / Graphs**
+    - “Plot job posting trends from 2019 to 2025.”
+    - “Graph Caymanian unemployment from LFS datasets.”
+    - “Visualize job postings by industry.”
+
+    **Tables**
+    - “Show a table of job postings by year.”
+    - “Display Caymanian vs non-Caymanian labour force levels.”
+    - “List top occupations with highest permit counts.”
+
+    **Executive Narratives**
+    - “Write an executive summary of current workforce conditions.”
+    - “Explain labour market risks across SPS + LFS.”
+    - “Analyze tech workforce supply vs job posting demand.”
+
+    **Reports**
+    - “Generate a workforce intelligence report combining all datasets.”
+    """)
+
+
+############################################################
+#                    HEADER COMPONENT
+############################################################
+
+def render_header():
+    """Renders the main title + Cayman crest."""
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Cayman crest (upper right)
+    try:
+        crest_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Coat_of_arms_of_the_Cayman_Islands.svg/1200px-Coat_of_arms_of_the_Cayman_Islands.svg.png"
+        crest_data = requests.get(crest_url).content
+        crest = Image.open(BytesIO(crest_data))
+    except:
+        crest = None
+
+    col1, col2 = st.columns([4, 1])
+
+    with col1:
+        st.markdown(
+            """
+            <div style='text-align: left;'>
+                <h1 style='margin-bottom: 0;'>
+                    WORC / Cayman Workforce Intelligence Assistant
+                </h1>
+                <p style='font-size: 18px; margin-top: -6px; color:#444;'>
+                    A unified labour market intelligence platform built on SPS, LFS, Wage Survey,
+                    job postings, WORC datasets, and more.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with col2:
+        if crest:
+            st.image(crest, width=110)
 
     st.markdown("---")
 
-    # ------------------------------------------------------------
-    # CHAT SECTION
-    # ------------------------------------------------------------
-    st.subheader("💬 Ask a Workforce Question")
 
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = []
+############################################################
+#                       MAIN APP
+############################################################
 
-    # Display history
-    for msg in st.session_state["messages"]:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+def main():
+    st.set_page_config(
+        page_title="Cayman Workforce Intelligence Assistant",
+        layout="wide"
+    )
 
-    # Chat input
-    query = st.chat_input("Ask a question about Cayman’s workforce…")
+    # Load the database
+    con = load_database()
 
-    if query:
-        # Show user's message
-        st.session_state["messages"].append({"role": "user", "content": query})
-        with st.chat_message("user"):
-            st.write(query)
+    # Sidebar
+    sidebar_content(con)
 
-        # Pass to router
-        handler = chat_duckdb.route(query)
+    # Header
+    render_header()
 
-        # Generate answer
-        with st.chat_message("assistant"):
-            try:
-                answer = handler(con, query)
-                st.write(answer)
-                st.session_state["messages"].append({"role": "assistant", "content": answer})
-            except Exception as e:
-                st.error("An error occurred while processing your request. Please try again.")
-                st.text(str(e))
+    # ---------------------------------------------------------
+    # QUESTION INPUT
+    # ---------------------------------------------------------
+    st.markdown("## Ask a Workforce Question")
+
+    question = st.text_area(
+        "Type any question about trends, charts, job postings, SPS, LFS, wages, shortages, or insights:",
+        height=120,
+        placeholder="Example: Plot job posting trends by industry from 2019–2025..."
+    )
+
+    if st.button("Submit"):
+        st.markdown("### Results")
+        handler = route(question)
+
+        try:
+            answer = handler(con, question)
+            if isinstance(answer, str):
+                st.markdown(answer)
+        except Exception as e:
+            st.error(f"An error occurred while processing your request: {e}")
 
 
-# ------------------------------------------------------------
-# LAUNCH APP
-# ------------------------------------------------------------
+############################################################
+#                      RUN APP
+############################################################
+
 if __name__ == "__main__":
     main()
