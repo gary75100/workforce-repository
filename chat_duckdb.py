@@ -1,352 +1,197 @@
-from pathlib import Path
-import os
-
 import duckdb
 import pandas as pd
-from dotenv import load_dotenv
+import plotly.express as px
+import streamlit as st
 from openai import OpenAI
 
-# --------------------------------------------------------------------
-# Configuration
-# --------------------------------------------------------------------
+# Load API key
+client = OpenAI()
 
-BASE_DIR = Path(__file__).resolve().parent
+############################################################
+# 1. SQL GENERATION ENGINE (LLM)
+############################################################
 
-DB_PATH = BASE_DIR / "Workforce Development Data Team" / "cayman_workforce.duckdb"
-
-# Key tables / prefixes in your lake
-LFS_TABLE = "pdf_the_cayman_islands_labour_force_survey_report_fall_2024_t1"
-WORC_ANNUAL_POSTINGS = "worc_data_v3_annual_postings"
-WORC_TOTAL_POSTINGS = "worc_data_v3_total_postings"
-WORC_INDUSTRY = "worc_data_v3_industry"
-PERMITS_TABLE = "copy_of_current_wp_by_occupations_6_dec_2024_sheet2"
-SCHOLARSHIP_TABLE = "scholarship_database_cj_edits_v2_bonding"  # use main logical view
-LOCAL_STUDENT_PREFIX = "local_students"
-OVERSEAS_STUDENT_PREFIX = "overseas_students"
-
-# Load API key from .env
-load_dotenv(BASE_DIR / ".env")
-API_KEY = os.getenv("OPENAI_API_KEY")
-
-if not API_KEY:
-    raise RuntimeError(
-        "OPENAI_API_KEY is missing.\n"
-        "Create a file named '.env' in this folder with a line like:\n"
-        "OPENAI_API_KEY=sk-...your_key_here..."
-    )
-
-client = OpenAI(api_key=API_KEY)
-
-
-# --------------------------------------------------------------------
-# DB helpers
-# --------------------------------------------------------------------
-
-def connect_db() -> duckdb.DuckDBPyConnection:
-    if not DB_PATH.exists():
-        raise RuntimeError(f"Database not found at: {DB_PATH}")
-    return duckdb.connect(str(DB_PATH))
-
-
-def safe_select(con: duckdb.DuckDBPyConnection, sql: str) -> pd.DataFrame:
-    """Run a query and return a DataFrame, with clear error messages."""
-    try:
-        return con.execute(sql).fetchdf()
-    except Exception as e:
-        raise RuntimeError(f"SQL error: {e}\nQUERY:\n{sql}")
-
-
-def table_exists(con: duckdb.DuckDBPyConnection, name: str) -> bool:
-    df = con.execute(
-        "SELECT 1 FROM duckdb_tables() WHERE lower(table_name) = lower(?)",
-        [name],
-    ).fetchdf()
-    return not df.empty
-
-
-# --------------------------------------------------------------------
-# Executive-style LLM formatter
-# --------------------------------------------------------------------
-
-def llm_format(question: str, data_text: str) -> str:
+def llm_generate_sql(question: str, tables: list[str]) -> str:
     """
-    Take raw text representing data (tables or lines) and return a short
-    executive-style answer to the question.
+    Asks the LLM to generate a SQL query based on the question.
+    Ensures the LLM ONLY outputs SQL with no explanation.
     """
+    table_list = ", ".join(tables)
+
     prompt = f"""
-You are a senior business analyst preparing a brief for executives. Use the DATA below to answer the QUESTION.
+    You are a SQL generator for DuckDB.
+    The user asked: "{question}"
+    
+    Available tables in the database are: {table_list}.
+    
+    Write ONLY a valid DuckDB SQL query.
+    No commentary.
+    No explanation.
+    No markdown formatting.
+    Just SQL.
+    """
 
-QUESTION:
-{question}
-
-DATA:
-{data_text}
-
-GUIDELINES:
-- Write 3–7 sentences, concise and clear.
-- Use business-oriented language suitable for a board or senior leadership.
-- Focus on the most recent or most relevant figures when multiple time periods appear.
-- Use commas in large numbers (e.g., 1048 -> 1,048).
-- Use percentages with one decimal place where appropriate.
-- Turn any table-like text into insights; do not show raw tables back.
-- If data is incomplete, say what can be inferred and what cannot.
-
-Return ONLY the final written answer.
-""".strip()
-
-    resp = client.chat.completions.create(
+    response = client.chat.completions.create(
         model="gpt-4o",
+        temperature=0,
         messages=[
-            {"role": "system", "content": "You write clear, executive-level analytical summaries."},
-            {"role": "user", "content": prompt},
-        ],
+            {"role": "system", "content": "Output only SQL queries."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response.choices[0].message["content"].strip()
+
+
+############################################################
+# 2. EXECUTIVE NARRATIVE ENGINE
+############################################################
+
+def generate_executive_narrative(question: str, con):
+    """
+    Produces a C-suite style executive analysis that can reference multiple tables.
+    Combines SQL retrieval with LLM reasoning.
+    """
+
+    # Pull table list
+    tables = [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+
+    sql_prompt = f"""
+    The user asked for an executive-level analysis:
+
+    "{question}"
+
+    You have access to the following dataset tables:
+    {tables}
+
+    First, identify the 3–5 most relevant tables.
+    Then write a **C-suite, strategic narrative** using trends, data interpretation,
+    workforce risk framing, SPS themes, LFS insights, and job market signals.
+    
+    Do NOT output SQL.
+    Do NOT reference table names directly.
+    Write like a Senior Workforce Economist briefing Cabinet leadership.
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
         temperature=0.25,
+        messages=[
+            {"role": "system", "content": "Write executive-level workforce analysis."},
+            {"role": "user", "content": sql_prompt}
+        ]
     )
 
-    return resp.choices[0].message.content.strip()
+    return response.choices[0].message["content"]
 
 
-# --------------------------------------------------------------------
-# Handlers
-# --------------------------------------------------------------------
+############################################################
+# 3. CHART ENGINE (PLOTLY)
+############################################################
 
-def handle_lfs(con: duckdb.DuckDBPyConnection, question: str) -> str:
+def generate_chart(con, question: str):
     """
-    Fall 2024 Labour Force Survey (OCR). We treat the table as flat text and let the LLM
-    interpret it for unemployment, labour force, participation, etc.
-    """
-    if not table_exists(con, LFS_TABLE):
-        return "The Fall 2024 Labour Force Survey table is not present in the data lake."
-
-    df = safe_select(con, f'SELECT "Unnamed: 0" FROM "{LFS_TABLE}"')
-    text = "LABOUR FORCE SURVEY FALL 2024 (flattened OCR table)\n" + "\n".join(
-        df["Unnamed: 0"].astype(str).tolist()
-    )
-    return llm_format(question, text)
-
-
-def handle_worc(con: duckdb.DuckDBPyConnection, question: str) -> str:
-    """
-    WORC job postings tables: annual totals, totals, and industry breakdown.
-    """
-    parts = []
-
-    if table_exists(con, WORC_ANNUAL_POSTINGS):
-        df = safe_select(con, f'SELECT * FROM "{WORC_ANNUAL_POSTINGS}"')
-        parts.append("WORC ANNUAL JOB POSTINGS\n" + df.to_string(index=False))
-
-    if table_exists(con, WORC_TOTAL_POSTINGS):
-        df = safe_select(con, f'SELECT * FROM "{WORC_TOTAL_POSTINGS}"')
-        parts.append("WORC TOTAL POSTINGS SUMMARY\n" + df.to_string(index=False))
-
-    if table_exists(con, WORC_INDUSTRY):
-        df = safe_select(con, f'SELECT * FROM "{WORC_INDUSTRY}"')
-        parts.append("WORC JOB POSTINGS BY INDUSTRY\n" + df.to_string(index=False))
-
-    if not parts:
-        return "No WORC job-posting tables were found in the data lake."
-
-    return llm_format(question, "\n\n".join(parts))
-
-
-def handle_permits(con: duckdb.DuckDBPyConnection, question: str) -> str:
-    """
-    Work permits by occupation.
-    """
-    if not table_exists(con, PERMITS_TABLE):
-        return "The work-permits-by-occupation table is not present in the data lake."
-
-    df = safe_select(con, f'SELECT * FROM "{PERMITS_TABLE}"')
-    if "Grand Total" in df.columns:
-        df = df.sort_values("Grand Total", ascending=False)
-
-    text = "WORK PERMITS BY OCCUPATION (Top rows by total permits)\n" + df.head(150).to_string(index=False)
-    return llm_format(question, text)
-
-
-def handle_scholarships(con: duckdb.DuckDBPyConnection, question: str) -> str:
-    """
-    Scholarship programmes. We use your 'bonding' or core view; adjust SCHOLARSHIP_TABLE above
-    if a different sheet is more representative.
-    """
-    if not table_exists(con, SCHOLARSHIP_TABLE):
-        return "Scholarship programme tables are not present in the data lake."
-
-    df = safe_select(con, f'SELECT * FROM "{SCHOLARSHIP_TABLE}"')
-    text = "SCHOLARSHIPS / BURSARIES (Sample rows)\n" + df.head(200).to_string(index=False)
-    return llm_format(question, text)
-
-
-def handle_students(con, question: str):
-    """
-    Summarize only the student fields relevant to 'near graduation' without dumping entire tables.
+    Detects chart intent, generates SQL, executes it, and renders Plotly charts.
     """
 
-    # Get list of tables
-    tables_df = con.execute(
-        "SELECT table_name FROM duckdb_tables() WHERE NOT internal ORDER BY table_name;"
-    ).fetchdf()
-    table_names = [t.lower() for t in tables_df["table_name"]]
+    # Get table list
+    tables = [row[0] for row in con.execute("SHOW TABLES").fetchall()]
 
-    summaries = []
+    # Get SQL from LLM
+    sql = llm_generate_sql(question, tables)
 
-    for t in table_names:
-        if t.startswith("overseas_students") or t.startswith("local_students"):
-            df = con.execute(f'SELECT * FROM "{t}"').fetchdf()
+    # Run SQL
+    try:
+        df = con.execute(sql).fetchdf()
+    except Exception as e:
+        return f"SQL Error: {e}\nGenerated SQL:\n{sql}"
 
-            # Try to detect completion date columns
-            completion_cols = [c for c in df.columns if "completion" in c.lower() or "expected" in c.lower()]
+    if df.empty:
+        return f"No data returned.\nSQL:\n{sql}"
 
-            major_cols = [c for c in df.columns if "major" in c.lower() or "subject" in c.lower() or "field" in c.lower()]
+    # Require at least one numeric column
+    numeric_cols = df.select_dtypes(include=["float", "int"]).columns
+    if len(numeric_cols) == 0:
+        return f"SQL returned no numeric fields to plot.\nSQL:\n{sql}"
 
-            level_cols = [c for c in df.columns if "degree" in c.lower() or "level" in c.lower()]
+    # If dataframe contains date-like strings, convert them
+    for col in df.columns:
+        if df[col].dtype == object:
+            try:
+                df[col] = pd.to_datetime(df[col])
+            except:
+                pass
 
-            # If there is an expected completion date column
-            if completion_cols:
-                col = completion_cols[0]
+    # Plot with Plotly
+    fig = px.line(df, x=df.columns[0], y=df.columns[1:], markers=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-                # Keep only entries within next 18 months
-                # Some rows have messy date formats; just keep non-null
-                subdf = df[df[col].notnull()]
+    return f"Chart generated.\nSQL used:\n{sql}"
 
-                # Take a small sample for summarization
-                sample = subdf.head(50)
 
-                summaries.append(
-                    f"\nTABLE {t}\nColumns: {', '.join(df.columns)}\nSample rows:\n{sample.to_string(index=False)}"
-                )
+############################################################
+# 4. TABLE OUTPUT ENGINE
+############################################################
 
-            else:
-                # If there's no completion date column, provide reduced view
-                sample = df.head(50)
-                summaries.append(
-                    f"\nTABLE {t}\n(No completion date column found.) Sample rows:\n{sample.to_string(index=False)}"
-                )
+def generate_table(con, question: str):
+    """
+    Returns a table (dataframe) based on LLM-generated SQL.
+    """
 
-    # Combine into manageable text
-    combined = "\n\n".join(summaries)
+    tables = [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+    sql = llm_generate_sql(question, tables)
 
-    guidance = """
-We are trying to answer:
-"How many students are near graduation in the next 12–18 months, and in which fields?"
+    try:
+        df = con.execute(sql).fetchdf()
+    except Exception as e:
+        return f"SQL Error: {e}\nSQL:\n{sql}"
 
-Use ONLY:
-- expected completion dates (if present)
-- degree level
-- major/field
-- local vs overseas (from table names)
-- sample rows (not full tables)
-"""
+    if df.empty:
+        return f"No data returned.\nSQL:\n{sql}"
 
-    final_text = guidance + "\n" + combined[:18000]  # HARD CAP on size
+    st.dataframe(df, use_container_width=True)
+    return f"Table generated.\nSQL used:\n{sql}"
 
-    return llm_format(question, final_text)
 
-# --------------------------------------------------------------------
-# Router
-# --------------------------------------------------------------------
+############################################################
+# 5. GENERAL SQL QUERY ENGINE
+############################################################
+
+def handle_sql(con, question: str):
+    """
+    Handles normal queries that should return text answers or summaries.
+    """
+    tables = [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+    sql = llm_generate_sql(question, tables)
+
+    try:
+        df = con.execute(sql).fetchdf()
+    except Exception as e:
+        return f"SQL Error: {e}\n{sql}"
+
+    # Show the dataframe
+    st.dataframe(df)
+    return f"SQL used:\n{sql}"
+
+
+############################################################
+# 6. ROUTER — DECIDES WHICH ENGINE TO USE
+############################################################
 
 def route(question: str):
-    """
-    Decide which handler to use based on the content of the question.
-    This is where we anticipate synonyms (college, grad, etc.).
-    """
     q = question.lower()
 
-    # Labour Force / Unemployment / Participation / LFS
-    if any(k in q for k in [
-        "labour", "labor", "unemployment", "unemployed", "employment",
-        "employed", "participation rate", "lfs", "labour force survey",
-        "labor force survey", "jobless", "joblessness"
-    ]):
-        return handle_lfs
+    # Chart / plot detection
+    if any(word in q for word in ["chart", "plot", "graph", "visualize", "trend", "line chart", "bar chart"]):
+        return generate_chart
 
-    # Job postings / vacancies / WORC
-    if any(k in q for k in [
-        "job posting", "postings", "vacancy", "vacancies",
-        "openings", "worc", "job board", "advertised roles"
-    ]):
-        return handle_worc
+    # Table request
+    if any(word in q for word in ["table", "list", "show me rows", "display rows"]):
+        return generate_table
 
-    # Work permits / occupations
-    if any(k in q for k in [
-        "work permit", "work permits", "permits", "permit",
-        "occupation", "occupations", "jobs filled by permits"
-    ]):
-        return handle_permits
+    # Executive / C-suite analysis
+    if any(word in q for word in ["executive", "summary", "brief", "narrative", "analysis", "report", "insights"]):
+        return generate_executive_narrative
 
-    # Scholarships / bursaries
-    if any(k in q for k in [
-        "scholarship", "scholarships", "bursary", "bursaries",
-        "grant", "grants", "funding for students"
-    ]):
-        return handle_scholarships
-
-    # Students / college / graduation / degree / university
-    if any(k in q for k in [
-        "student", "students", "college", "university", "undergrad",
-        "undergraduate", "postgrad", "postgraduate", "degree",
-        "degrees", "graduation", "graduate", "graduating",
-        "near graduation", "about to graduate", "final year"
-    ]):
-        return handle_students
-
-    # Fallback
-    def fallback(_con, _q):
-        return (
-            "I can help with these domains right now:\n"
-            "- Labour Force Survey (Fall 2024)\n"
-            "- WORC job postings and vacancies\n"
-            "- Work permits by occupation\n"
-            "- Scholarship and bursary programmes\n"
-            "- Local and overseas student cohorts\n\n"
-            "Please rephrase your question in one of these areas."
-        )
-
-    return fallback
-
-
-# --------------------------------------------------------------------
-# Main loop
-# --------------------------------------------------------------------
-
-def main():
-    try:
-        con = connect_db()
-    except Exception as e:
-        print("ERROR connecting to the data lake:", e)
-        return
-
-    print("✅ Connected to Cayman Workforce Data Lake")
-    print("You can ask about: LFS, job postings, work permits, scholarships, students.")
-    print("Press Enter on an empty line to exit.\n")
-
-    while True:
-        try:
-            q = input("Q> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
-
-        if q == "":
-            print("Goodbye.")
-            break
-
-        handler = route(q)
-
-        try:
-            answer = handler(con, q)
-        except Exception as e:
-            print("\nERROR while processing your request:\n", e)
-            continue
-
-        print("\nResult:\n")
-        print(answer)
-        print()
-
-    con.close()
-
-
-if __name__ == "__main__":
-    main()
-
+    # Default: general SQL-based retrieval
+    return handle_sql
