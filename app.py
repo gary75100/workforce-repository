@@ -10,7 +10,7 @@ import chat_duckdb
 # ------------------------------------------------------------
 # CONFIG
 # ------------------------------------------------------------
-DB_URL = "https://www.dropbox.com/scl/fi/qjc8k6aol1nmirbs8u4wi/cayman_workforce.duckdb?rlkey=gm7rdiu3xzqrs9c1be0fnxqya&st=6lmvhxh9&dl=1"
+DB_URL = "https://www.dropbox.com/scl/fi/1q2ihrpxonjqr5gmd0e6j/cayman_workforce.duckdb?rlkey=shcsg8q5j6jq8nlura4jka6sa&st=2bsoya5s&dl=1"
 DB_PATH = Path("cayman_workforce.duckdb")
 
 # ------------------------------------------------------------
