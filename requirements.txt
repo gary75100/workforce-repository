@@ -1,6 +1,6 @@
-streamlit
+openai
 duckdb
 pandas
-python-dotenv
-openai
-
+streamlit
+plotly
+matplotlib
