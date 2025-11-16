@@ -2,17 +2,30 @@ import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
+import openai
 
 # ----------------------------------------------------
-# DATABASE CONNECTION
+# CONFIG / CONNECTIONS
 # ----------------------------------------------------
+st.set_page_config(
+    page_title="Cayman Workforce Intelligence Assistant",
+    layout="wide"
+)
+
+# DuckDB connection (make sure this matches your filename)
 conn = duckdb.connect("cayman_workforce.duckdb", read_only=False)
 
 def run_sql(sql: str) -> pd.DataFrame:
     return conn.execute(sql).df()
 
+# OpenAI client (expects OPENAI_API_KEY in .streamlit/secrets.toml)
+openai.api_key = st.secrets["OPENAI_API_KEY"]
+
+MODEL_NAME = "gpt-4o"  # recommended for this app
+
+
 # ----------------------------------------------------
-# TOPIC CLASSIFICATION
+# TOPIC CLASSIFICATION (simple keyword routing)
 # ----------------------------------------------------
 TOPIC_KEYWORDS = {
     "labour_force": [
@@ -43,8 +56,9 @@ def pick_topic(user_query: str) -> str:
             return topic
     return "general"
 
+
 # ----------------------------------------------------
-# ROUTING HELPERS (use meta.routing and meta.joins)
+# ROUTING HELPERS (meta.routing + SPS context)
 # ----------------------------------------------------
 def get_tables_for_topic(topic: str) -> list[str]:
     sql = f"""
@@ -67,33 +81,47 @@ def get_sps_context(topic: str) -> pd.DataFrame:
     """
     return run_sql(sql)
 
-# ----------------------------------------------------
-# STREAMLIT CONFIG
-# ----------------------------------------------------
-st.set_page_config(
-    page_title="Cayman Workforce Intelligence Assistant",
-    layout="wide"
-)
 
+# ----------------------------------------------------
+# OPENAI HELPER
+# ----------------------------------------------------
+def ask_gpt(prompt: str, system_msg: str = "You are a helpful Cayman workforce and policy analyst."):
+    """Call GPT-4o with a simple system + user message."""
+    resp = openai.ChatCompletion.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=700,
+        temperature=0.2,
+    )
+    return resp["choices"][0]["message"]["content"].strip()
+
+
+# ----------------------------------------------------
+# LAYOUT / TABS
+# ----------------------------------------------------
 st.title("🇰🇾 Cayman Workforce Intelligence Assistant")
 
 tab_chat, tab_lfs, tab_wages, tab_jobs, tab_policy = st.tabs(
     ["💬 Ask a Question", "📊 Labour Force (LFS)", "💵 Wages (OWS)", "🧳 Job Postings", "📘 SPS Policy"]
 )
 
+
 # ====================================================
-# TAB 1 — NATURAL LANGUAGE CHAT EXPERIENCE
+# TAB 1 — NATURAL LANGUAGE CHAT (AI + DATA, HYBRID)
 # ====================================================
 with tab_chat:
     st.header("Ask any workforce question")
 
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+        st.session_state.chat_history = []  # list of (role, content)
 
     user_q = st.text_input(
         "Your question:",
-        placeholder="e.g., How do wages for construction compare to job postings?",
-        key="user_question"
+        placeholder="e.g., How have Caymanian wages in construction changed compared to job postings?",
+        key="user_question_chat"
     )
 
     if user_q:
@@ -103,41 +131,66 @@ with tab_chat:
         tables = get_tables_for_topic(topic)
         main_table = tables[0] if tables else None
 
-        # Very simple query strategy: show sample from the main table
         df = pd.DataFrame()
+        data_snippet = ""
         if main_table:
             try:
-                df = run_sql(f"SELECT * FROM {main_table} LIMIT 100")
+                # pull a small sample from the relevant table
+                df = run_sql(f"SELECT * FROM {main_table} LIMIT 200")
+                if not df.empty:
+                    data_snippet = df.head(25).to_markdown(index=False)
             except Exception as e:
-                df = pd.DataFrame({"error": [str(e)]})
+                data_snippet = f"(Error reading data: {e})"
 
-        # SPS policy context
+        # SPS policy snippet
         sps_df = get_sps_context(topic)
+        sps_snippet = ""
+        if not sps_df.empty:
+            sps_snippet = "\n\nSPS policy context:\n" + "\n\n---\n\n".join(
+                [f"(Page {row['page']}): {row['text_block'][:800]}" for _, row in sps_df.iterrows()]
+            )
 
-        # Append to chat history
+        # Build prompt for GPT
+        prompt = f"""
+User question:
+{user_q}
+
+Relevant topic: {topic}
+
+Here is a sample of relevant data from the database (if any):
+{data_snippet}
+
+{sps_snippet}
+
+Please:
+- Interpret the question in the Cayman workforce / policy context.
+- Reference the data directly where possible.
+- If data is limited, say so and answer qualitatively.
+- Be concise but informative, and write as if briefing a senior policymaker.
+"""
+
+        answer = ask_gpt(prompt)
+
+        # Update chat history
         st.session_state.chat_history.append(("You", user_q))
-        if main_table:
-            assistant_text = f"Topic: **{topic}**. Showing sample data from `{main_table}`."
-        else:
-            assistant_text = f"Topic: **{topic}**. I could not find a matching data table."
-
-        st.session_state.chat_history.append(("Assistant", assistant_text))
+        st.session_state.chat_history.append(("Assistant", answer))
         if not df.empty:
-            st.session_state.chat_history.append(("Data", df))
+            st.session_state.chat_history.append(("Data sample", df))
         if not sps_df.empty:
             st.session_state.chat_history.append(("SPS Context", sps_df))
 
-    # Render conversation
+    # Render full conversation
     st.markdown("### Conversation")
     for role, content in st.session_state.chat_history:
         if role in ("You", "Assistant"):
             st.markdown(f"**{role}:** {content}")
-        elif role == "Data":
+        elif role == "Data sample":
             st.markdown("**Data sample:**")
             st.dataframe(content)
         elif role == "SPS Context":
             st.markdown("**Relevant SPS Policy Context:**")
             st.dataframe(content)
+
 
 # ====================================================
 # TAB 2 — LFS (Labour Force)
@@ -150,7 +203,6 @@ with tab_lfs:
     st.subheader("Overview by Status")
     st.dataframe(df_status)
 
-    # Simple Plotly line chart: value over survey_date by status
     if not df_status.empty:
         fig = px.line(
             df_status,
@@ -161,10 +213,25 @@ with tab_lfs:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Participation by category
+        if st.button("Explain this LFS status chart with AI"):
+            snippet = df_status.head(40).to_markdown(index=False)
+            prompt = f"""
+You are a Cayman labour market analyst.
+
+Here is a table showing LFS status metrics over time:
+{snippet}
+
+Explain the key patterns and any notable trends in simple, executive-level language.
+"""
+            explanation = ask_gpt(prompt)
+            st.markdown("### AI Explanation")
+            st.write(explanation)
+
+    # Participation rates
     df_part = run_sql("SELECT * FROM curated.fact_lfs_participation")
     st.subheader("Participation Rates")
     st.dataframe(df_part)
+
 
 # ====================================================
 # TAB 3 — Wages (OWS)
@@ -172,7 +239,6 @@ with tab_lfs:
 with tab_wages:
     st.header("Occupational Wage Survey (OWS)")
 
-    # Mean wages by industry
     df_ind = run_sql("""
         SELECT *
         FROM curated.fact_wages
@@ -187,12 +253,25 @@ with tab_wages:
             x="subcategory",
             y="value",
             title="Mean Monthly Basic Earnings by Industry",
-            labels={"subcategory": "Industry", "value": "Mean Basic Earnings"}
+            labels={"subcategory": "Industry", "value": "Mean Basic Earnings (CI$)"}
         )
         fig.update_layout(xaxis_tickangle=45)
         st.plotly_chart(fig, use_container_width=True)
 
-    # Example: mean wages by occupation (sample)
+        if st.button("Explain this wage chart with AI"):
+            snippet = df_ind.head(40).to_markdown(index=False)
+            prompt = f"""
+You are a Cayman wage and labour market analyst.
+
+Here is a table of mean basic monthly earnings by industry:
+{snippet}
+
+Explain which industries are highest and lowest paying, and what this implies for workforce and policy.
+"""
+            explanation = ask_gpt(prompt)
+            st.markdown("### AI Explanation")
+            st.write(explanation)
+
     df_occ = run_sql("""
         SELECT *
         FROM curated.fact_wages
@@ -201,6 +280,7 @@ with tab_wages:
     """)
     st.subheader("Sample: Mean Basic Earnings by Occupation")
     st.dataframe(df_occ)
+
 
 # ====================================================
 # TAB 4 — Job Postings
@@ -228,6 +308,21 @@ with tab_jobs:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+        if st.button("Explain this job posting trend with AI"):
+            snippet = df_jobs.head(60).to_markdown(index=False)
+            prompt = f"""
+You are a Cayman labour market analyst.
+
+Here is a table of job postings by industry over time:
+{snippet}
+
+Explain which industries are growing or declining in demand, and what this means for workforce planning.
+"""
+            explanation = ask_gpt(prompt)
+            st.markdown("### AI Explanation")
+            st.write(explanation)
+
+
 # ====================================================
 # TAB 5 — SPS Policy
 # ====================================================
@@ -238,7 +333,6 @@ with tab_policy:
     st.subheader("SPS Text Blocks")
     st.dataframe(df_sps)
 
-    # Topic distribution from dim_sps_topics, if present
     try:
         df_topics = run_sql("""
             SELECT topic, COUNT(*) AS mentions
@@ -256,3 +350,23 @@ with tab_policy:
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.write("Could not load SPS topic distribution:", str(e))
+
+    if st.button("Summarize SPS workforce direction with AI"):
+        snippet = df_sps.head(30).to_markdown(index=False)
+        prompt = f"""
+You are a Cayman government policy analyst.
+
+Here are sample excerpts from the Strategic Policy Statement:
+{snippet}
+
+Summarize the key themes related to:
+- workforce
+- education
+- immigration
+- economic development
+
+Write as a short briefing for senior leadership.
+"""
+        explanation = ask_gpt(prompt)
+        st.markdown("### AI SPS Summary")
+        st.write(explanation)
