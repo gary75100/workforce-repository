@@ -5,437 +5,315 @@ import plotly.express as px
 import json
 import traceback
 
+# NEW OpenAI API
 from openai import OpenAI
+
+# DB loader for GitHub Release download
 from db_loader import ensure_database
 
-# ----------------------------------------------------
-# CONFIG / CONNECTIONS
-# ----------------------------------------------------
+
+# ============================================================
+#   CONFIG
+# ============================================================
+
 st.set_page_config(
     page_title="Cayman Workforce Intelligence Assistant",
-    layout="wide"
+    layout="wide",
 )
 
-# DuckDB connection
+MODEL_NAME = "gpt-4o"
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+
+# ============================================================
+#   DATABASE CONNECTION
+# ============================================================
+
 db_path = ensure_database()
 conn = duckdb.connect(db_path, read_only=False)
-
 
 def run_sql(sql: str) -> pd.DataFrame:
     return conn.execute(sql).df()
 
 
-# OpenAI Client (expects OPENAI_API_KEY in secrets)
-MODEL_NAME = "gpt-4o"
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# ============================================================
+#   TOPIC DETECTION
+# ============================================================
 
-
-# ----------------------------------------------------
-# TOPIC CLASSIFICATION
-# ----------------------------------------------------
 TOPIC_KEYWORDS = {
-    "labour_force": [
-        "unemployment", "employment", "participation", "labour", "labor",
-        "workforce", "economically active", "inactive"
-    ],
-    "wages": [
-        "wage", "salary", "pay", "earnings", "compensation", "mean annual"
-    ],
-    "job_postings": [
-        "jobs", "postings", "vacancies", "openings", "demand", "recruiting"
-    ],
-    "industry": [
-        "industry", "sector", "economic sector"
-    ],
-    "occupation": [
-        "occupation", "job title", "role", "position", "profession"
-    ],
-    "policy": [
-        "sps", "policy", "strategic", "broad outcomes", "government priority"
-    ],
+    "job_postings": ["job", "posting", "vacanc", "recruit", "opening"],
+    "labour_force": ["labour", "labor", "employment", "participation", "unemployment"],
+    "wages": ["wage", "salary", "earnings", "compensation"],
+    "industry": ["industry", "sector"],
+    "occupation": ["occupation", "role", "job title"],
+    "policy": ["sps", "policy", "strategic", "broad outcome"],
 }
 
-
-def pick_topic(user_query: str) -> str:
-    q = user_query.lower()
-    for topic, keywords in TOPIC_KEYWORDS.items():
-        if any(k in q for k in keywords):
+def detect_topic(q: str) -> str:
+    q = q.lower()
+    for topic, kws in TOPIC_KEYWORDS.items():
+        if any(k in q for k in kws):
             return topic
     return "general"
 
 
-# ----------------------------------------------------
-# ROUTING HELPERS
-# ----------------------------------------------------
-def get_tables_for_topic(topic: str) -> list[str]:
-    sql = f"""
-        SELECT tables
-        FROM meta.routing
-        WHERE topic = '{topic}'
-        LIMIT 1
-    """
-    row = conn.execute(sql).fetchone()
-    if not row:
-        return []
-    return [t.strip() for t in row[0].split(",")]
+# ============================================================
+#   GPT FUNCTIONS
+# ============================================================
 
-
-def get_sps_context(topic: str) -> pd.DataFrame:
-    sql = f"""
-        SELECT page, text_block
-        FROM curated.fact_sps_context
-        WHERE text_block ILIKE '%{topic}%'
-        LIMIT 3
-    """
-    return run_sql(sql)
-
-
-# ----------------------------------------------------
-# GPT HELPERS
-# ----------------------------------------------------
-def ask_gpt(
-    prompt: str,
-    system_msg: str = "You are a helpful Cayman workforce and policy analyst."
-) -> str:
-    """
-    Generic GPT-4o call for explanations and summaries.
-    """
-    response = client.chat.completions.create(
+def ask_gpt(prompt: str, system="You are a Cayman workforce analyst."):
+    """Generic GPT call."""
+    resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
-            {"role": "system", "content": system_msg},
+            {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
-        max_tokens=900,
+        max_tokens=1000,
     )
-    return response.choices[0].message.content.strip()
+    return resp.choices[0].message.content.strip()
 
 
-def ask_gpt_for_chart(
-    user_query: str,
-    sample_data: str = "",
-    system_msg: str = "You are a Cayman workforce analytics assistant."
-) -> dict:
+def ask_gpt_for_chart(user_query: str, sample_data=""):
     """
-    Ask GPT to produce:
-    - SQL query (DuckDB SELECT)
-    - Plotly code using a local df
-    - Explanation of the chart
-
-    Returns a dict with keys: sql, chart_code, explanation
-    If parsing fails, returns {"error": ..., "raw": ..., "trace": ...}
+    GPT chart mode:
+    Returns JSON:
+    {
+      "sql": "...",
+      "chart_code": "fig = px.line(df, ...)",
+      "explanation": "..."
+    }
     """
     prompt = f"""
-You are an analytics copilot for Cayman workforce intelligence.
+You are an analytics copilot for the Cayman Islands Government Workforce Intelligence Application.
 
 User question:
 {user_query}
 
-You MUST respond ONLY with valid JSON of the form:
-{{
-  "sql": "SELECT ...",
-  "chart_code": "fig = px.line(df, x='col1', y='col2', color='col3')",
-  "explanation": "brief explanation of what the chart shows"
-}}
+You MUST return ONLY valid JSON with keys: sql, chart_code, explanation.
 
-RULES:
-- SQL must be READ-ONLY (only SELECT; no UPDATE, DELETE, INSERT, ALTER, DROP).
-- For job postings, you MUST ALWAYS use this table:
-    curated.fact_job_posting
-- Valid job posting fields are:
-    posted_date, industry, employer_name, occupation, salary_min, salary_max,
-    annual_salary_mean, work_type
-- NEVER use tables with names worc_job_postings_*, *_historical, *_nov_*, *_aug_*.
-  Those DO NOT exist.
+STRICT RULES:
+- SQL must be READ-ONLY (SELECT only).
+- For job posting questions YOU MUST USE:
+      curated.fact_job_posting
+- Valid job posting fields:
+      posted_date, industry, occupation, employer_name,
+      salary_min, salary_max, annual_salary_mean, work_type
+- NEVER use tables with names:
+      worc_job_postings_*, *_historical, *_nov_*, *_aug_*
+  (THEY DO NOT EXIST)
 - For wages, use curated.fact_wages.
 - For labour force, use curated.fact_lfs_*.
-- The chart_code must assume a pandas DataFrame named df.
-- Use Plotly Express (px) ONLY.
-- Return ONLY JSON with keys: sql, chart_code, explanation.
+- chart_code must assume df is a pandas DataFrame.
+- Chart must be Plotly Express (px) only.
 
-Here is some optional sample data (may be empty):
+Here is sample data to guide SQL structure (JSON format):
 {sample_data}
-"""
 
-    response = client.chat.completions.create(
+Return ONLY JSON. Do NOT wrap it in markdown fences.
+    """
+
+    resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
-            {"role": "system", "content": system_msg},
+            {"role": "system", "content": "You are a strict analytics generator."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
-        max_tokens=900,
+        max_tokens=1000,
     )
 
-    text = response.choices[0].message.content.strip()
+    text = resp.choices[0].message.content.strip()
 
+    # TRY to load JSON safely
     try:
         parsed = json.loads(text)
         return parsed
     except Exception:
-        return {
-            "error": "Invalid JSON from GPT",
-            "raw": text,
-            "trace": traceback.format_exc(),
-        }
+        return {"error": "invalid_json", "raw": text, "trace": traceback.format_exc()}
 
 
-# ----------------------------------------------------
-# STREAMLIT APP LAYOUT
-# ----------------------------------------------------
+# ============================================================
+#   STREAMLIT UI
+# ============================================================
+
 st.title("🇰🇾 Cayman Workforce Intelligence Assistant")
 
 tab_chat, tab_lfs, tab_wages, tab_jobs, tab_policy = st.tabs(
-    [
-        "💬 Ask a Question",
-        "📊 Labour Force (LFS)",
-        "💵 Wages (OWS)",
-        "🧳 Job Postings",
-        "📘 SPS Policy",
-    ]
+    ["💬 Ask Anything", "📊 LFS", "💵 Wages", "📈 Job Postings", "📘 SPS"]
 )
 
-# ====================================================
-# TAB 1 — CHAT (HYBRID: QA + AUTO-CHART)
-# ====================================================
+
+# ============================================================
+#   CHAT TAB
+# ============================================================
+
 with tab_chat:
     st.header("Ask any workforce question")
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    user_q = st.text_input(
+    q = st.text_input(
         "Your question:",
-        placeholder="e.g., Plot job postings by industry 2019–2025 or Summarize Caymanian participation.",
-        key="user_question_chat",
+        placeholder="e.g., Plot job postings by industry over the last 5 years",
+        key="chat_input",
     )
 
-    if user_q:
-        topic = pick_topic(user_q)
+    if q:
+        topic = detect_topic(q)
         st.info(f"Detected topic: **{topic}**")
 
-        # If question looks like a chart request → Chart mode
-        if any(word in user_q.lower() for word in ["plot", "chart", "graph"]):
-            # Optional sample data (kept simple to avoid heavy payloads)
-            tables = get_tables_for_topic(topic)
-            main_table = tables[0] if tables else None
-            sample_data_str = ""
-            if main_table:
-                try:
-                    sample_df = run_sql(f"SELECT * FROM {main_table} LIMIT 50")
-                    sample_data_str = sample_df.to_json(orient="records")
-                except Exception:
-                    sample_data_str = ""
+        # -----------------------------------------------
+        # CHART MODE
+        # -----------------------------------------------
+        if any(x in q.lower() for x in ["plot", "chart", "graph", "trend"]):
 
-            result = ask_gpt_for_chart(user_q, sample_data=sample_data_str)
+            # (Optional) send sample data for schema help
+            try:
+                sample = run_sql("SELECT * FROM curated.fact_job_posting LIMIT 50")
+                sample_json = sample.to_json(orient="records")
+            except:
+                sample_json = ""
 
-            st.session_state.chat_history.append(("You", user_q))
+            result = ask_gpt_for_chart(q, sample_data=sample_json)
 
-            if "error" in result:
-                st.error("AI could not generate a chart. Showing raw output.")
-                st.text(result.get("raw", ""))
-                st.session_state.chat_history.append(
-                    ("Assistant", "I could not safely generate a chart from that request.")
-                )
-            else:
-                sql = result.get("sql", "")
-                chart_code = result.get("chart_code", "")
-                explanation = result.get("explanation", "")
+            # FIXED ERROR CHECK
+            if isinstance(result, dict) and "error" in result:
+                st.error("AI could not generate chart JSON.")
+                st.code(result.get("raw", ""))
+                return
 
-                st.markdown("### Generated SQL")
-                st.code(sql, language="sql")
+            sql = result["sql"]
+            code = result["chart_code"]
+            explanation = result["explanation"]
 
-                try:
-                    df = run_sql(sql)
-                    st.markdown("### Data")
-                    st.dataframe(df)
+            st.subheader("SQL Generated")
+            st.code(sql, language="sql")
 
-                    # Safe environment for chart code
-                    local_env = {"px": px, "df": df}
-                    exec(chart_code, {}, local_env)
-                    fig = local_env.get("fig", None)
+            # execute SQL
+            try:
+                df = run_sql(sql)
+            except Exception as e:
+                st.error(f"SQL execution failed: {e}")
+                st.code(sql)
+                return
 
-                    if fig is not None:
-                        st.markdown("### Chart")
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.error("The AI did not return a 'fig' object in chart_code.")
+            st.dataframe(df)
 
-                    if explanation:
-                        st.markdown("### Explanation")
-                        st.write(explanation)
+            # run chart code safely
+            try:
+                env = {"px": px, "df": df}
+                exec(code, {}, env)
+                fig = env["fig"]
 
-                    st.session_state.chat_history.append(
-                        ("Assistant", f"Generated a chart and explanation for your request.")
-                    )
+                st.subheader("Chart")
+                st.plotly_chart(fig, use_container_width=True)
 
-                except Exception as e:
-                    st.error(f"Error running AI-generated SQL or chart code: {e}")
-                    st.session_state.chat_history.append(
-                        ("Assistant", "I encountered an error generating that chart.")
-                    )
+                st.subheader("Explanation")
+                st.write(explanation)
 
-        # Otherwise → QA / summary mode
+            except Exception as e:
+                st.error(f"Chart execution failed: {e}")
+                st.code(code)
+                return
+
+            st.session_state.chat_history.append(("You", q))
+            st.session_state.chat_history.append(("Assistant", explanation))
+            st.success("Chart generated.")
+            return
+
+        # -----------------------------------------------
+        # NON-CHART QUESTION
+        # -----------------------------------------------
         else:
-            tables = get_tables_for_topic(topic)
-            main_table = tables[0] if tables else None
-
-            data_snippet = ""
-            if main_table:
-                try:
-                    df = run_sql(f"SELECT * FROM {main_table} LIMIT 80")
-                    data_snippet = df.to_json(orient="records")
-                except Exception:
-                    data_snippet = ""
-
-            sps_df = get_sps_context(topic)
-            sps_snippet = ""
-            if not sps_df.empty:
-                sps_snippet = sps_df.to_json(orient="records")
+            df_sample = run_sql("SELECT * FROM curated.fact_job_posting LIMIT 50")
+            data_json = df_sample.to_json(orient="records")
 
             prompt = f"""
 User question:
-{user_q}
+{q}
 
-Detected topic: {topic}
+Here is a JSON sample of job posting data:
+{data_json}
 
-Here is a JSON sample of relevant data (if any):
-{data_snippet}
+Provide a clear answer with labour insights and SPS alignment.
+            """
 
-Here is some SPS policy text in JSON (if any):
-{sps_snippet}
-
-Using the data and policy context:
-- Answer the question directly.
-- Reference the data where possible.
-- Add SPS policy alignment where relevant.
-- Keep it concise but executive-level.
-"""
             answer = ask_gpt(prompt)
-
-            st.session_state.chat_history.append(("You", user_q))
+            st.session_state.chat_history.append(("You", q))
             st.session_state.chat_history.append(("Assistant", answer))
 
     # Render chat history
-    st.markdown("### Conversation")
-    for role, content in st.session_state.chat_history:
-        if role in ("You", "Assistant"):
-            st.markdown(f"**{role}:** {content}")
+    st.subheader("Conversation")
+    for role, msg in st.session_state.chat_history:
+        st.markdown(f"**{role}:** {msg}")
 
 
-# ====================================================
-# TAB 2 — LFS
-# ====================================================
+# ============================================================
+#   LFS TAB
+# ============================================================
+
 with tab_lfs:
     st.header("Labour Force Survey (LFS)")
 
-    df_status = run_sql("SELECT * FROM curated.fact_lfs_overview_status")
-    st.subheader("Overview by Status")
-    st.dataframe(df_status)
+    df = run_sql("SELECT * FROM curated.fact_lfs_overview_status")
+    st.dataframe(df)
 
-    if not df_status.empty:
+    if not df.empty:
         fig = px.line(
-            df_status,
-            x="survey_date",
-            y="value",
-            color="status",
-            title="LFS Metrics by Status over Time",
+            df, x="survey_date", y="value", color="status",
+            title="LFS Overview by Status"
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        if st.button("Explain this LFS status chart with AI"):
-            snippet = df_status.head(60).to_json(orient="records")
-            prompt = f"""
-You are a Cayman labour market analyst.
 
-Here are LFS status indicators in JSON:
-{snippet}
+# ============================================================
+#   WAGES TAB
+# ============================================================
 
-Explain the key patterns and notable trends for status groups (e.g., Caymanian vs non-Caymanian, employed, unemployed).
-Keep it short and executive-level.
-"""
-            explanation = ask_gpt(prompt)
-            st.markdown("### AI Explanation")
-            st.write(explanation)
-
-    df_part = run_sql("SELECT * FROM curated.fact_lfs_participation")
-    st.subheader("Participation Rates")
-    st.dataframe(df_part)
-
-
-# ====================================================
-# TAB 3 — WAGES (OWS)
-# ====================================================
 with tab_wages:
     st.header("Occupational Wage Survey (OWS)")
 
-    df_ind = run_sql("""
+    df = run_sql("""
         SELECT *
         FROM curated.fact_wages
         WHERE category = 'industry'
           AND metric = 'mean'
           AND measure_type = 'basic_earnings'
     """)
-    st.subheader("Mean Basic Earnings by Industry")
-    st.dataframe(df_ind)
+    st.dataframe(df)
 
-    if not df_ind.empty:
+    if not df.empty:
         fig = px.bar(
-            df_ind,
+            df,
             x="subcategory",
             y="value",
-            title="Mean Monthly Basic Earnings by Industry (CI$)",
-            labels={"subcategory": "Industry", "value": "Mean Basic Earnings"},
+            title="Mean Basic Earnings by Industry",
         )
-        fig.update_layout(xaxis_tickangle=45)
         st.plotly_chart(fig, use_container_width=True)
 
-        if st.button("Explain this wage chart with AI"):
-            snippet = df_ind.head(40).to_json(orient="records")
-            prompt = f"""
-You are a Cayman wage and labour market analyst.
 
-Here is JSON data: mean monthly basic earnings by industry:
-{snippet}
+# ============================================================
+#   JOB POSTINGS TAB
+# ============================================================
 
-Explain which industries are highest and lowest paying and what this implies for workforce and SPS policy.
-"""
-            explanation = ask_gpt(prompt)
-            st.markdown("### AI Explanation")
-            st.write(explanation)
-
-    df_occ = run_sql("""
-        SELECT *
-        FROM curated.fact_wages
-        WHERE category = 'occupation'
-          AND metric = 'mean'
-          AND measure_type = 'basic_earnings'
-        LIMIT 200
-    """)
-    st.subheader("Sample: Mean Basic Earnings by Occupation")
-    st.dataframe(df_occ)
-
-
-# ====================================================
-# TAB 4 — JOB POSTINGS
-# ====================================================
 with tab_jobs:
-    st.header("Job Postings (WORC)")
+    st.header("Job Postings")
 
-    df_jobs = run_sql("""
+    df = run_sql("""
         SELECT posted_date, industry, COUNT(*) AS postings
         FROM curated.fact_job_posting
         WHERE posted_date IS NOT NULL
         GROUP BY posted_date, industry
         ORDER BY posted_date
     """)
-    st.subheader("Job Postings by Industry over Time")
-    st.dataframe(df_jobs)
+    st.dataframe(df)
 
-    if not df_jobs.empty:
+    if not df.empty:
         fig = px.line(
-            df_jobs,
+            df,
             x="posted_date",
             y="postings",
             color="industry",
@@ -443,65 +321,27 @@ with tab_jobs:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        if st.button("Explain this job posting trend with AI"):
-            snippet = df_jobs.head(80).to_json(orient="records")
-            prompt = f"""
-You are a Cayman labour market analyst.
 
-Here is JSON data: job postings by industry over time:
-{snippet}
+# ============================================================
+#   SPS TAB
+# ============================================================
 
-Explain which industries show rising demand, which are flat or declining, and what this means for labour supply and SPS workforce priorities.
-"""
-            explanation = ask_gpt(prompt)
-            st.markdown("### AI Explanation")
-            st.write(explanation)
-
-
-# ====================================================
-# TAB 5 — SPS POLICY
-# ====================================================
 with tab_policy:
-    st.header("Strategic Policy Statement (SPS) — Policy Context")
+    st.header("Strategic Policy Statement (SPS)")
 
-    df_sps = run_sql("SELECT * FROM curated.fact_sps_context LIMIT 200")
-    st.subheader("SPS Text Blocks")
-    st.dataframe(df_sps)
+    df = run_sql("SELECT * FROM curated.fact_sps_context LIMIT 200")
+    st.dataframe(df)
 
-    try:
-        df_topics = run_sql("""
-            SELECT topic, COUNT(*) AS mentions
-            FROM curated.dim_sps_topics
-            GROUP BY topic
-        """)
-        if not df_topics.empty:
-            st.subheader("SPS Topic Distribution")
-            fig = px.pie(
-                df_topics,
-                names="topic",
-                values="mentions",
-                title="SPS Topic Distribution",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.write("Could not load SPS topic distribution:", str(e))
-
-    if st.button("Summarize SPS workforce direction with AI"):
-        snippet = df_sps.head(40).to_json(orient="records")
+    if st.button("Summarize SPS workforce direction"):
+        snippet = df.to_json(orient="records")
         prompt = f"""
-You are a Cayman government policy analyst.
-
-Here are sample SPS excerpts in JSON:
+Here are SPS text excerpts in JSON:
 {snippet}
 
-Summarize the key SPS themes related to:
-- workforce
-- education
-- immigration
-- economic development
+Summarize the workforce, education, and economic development direction
+as a policy brief for senior leadership.
+        """
+        answer = ask_gpt(prompt)
+        st.subheader("AI Summary")
+        st.write(answer)
 
-Write this as a brief for senior leadership.
-"""
-        explanation = ask_gpt(prompt)
-        st.markdown("### AI SPS Summary")
-        st.write(explanation)
