@@ -3,4 +3,4 @@ duckdb==0.10.3
 pandas==2.2.2
 plotly==5.21.0
 python-dateutil==2.9.0.post0
-
+openai
