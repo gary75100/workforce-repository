@@ -11,12 +11,7 @@ from chat_duckdb import route
 # ============================================================
 
 def load_database():
-    """
-    Downloads the DuckDB file from AWS S3 into a temporary file
-    using a browser-style User-Agent to avoid 403 errors.
-    """
     DB_URL = st.secrets["DB_URL"]
-
     try:
         import tempfile
         import urllib.request
@@ -35,115 +30,146 @@ def load_database():
         return duckdb.connect(temp.name)
 
     except Exception as e:
-        st.error(f"Error loading database: {e}")
+        st.error(f"Database Load Error: {e}")
         raise e
 
 
 # ============================================================
-#  SIDEBAR CONTENTS
+#  CAYMAN STYLE
+# ============================================================
+
+CAYMAN_BLUE = "#003C71"
+LIGHT_BLUE = "#E6EFF7"
+
+CUSTOM_CSS = f"""
+<style>
+
+    /* Global background */
+    .stApp {{
+        background-color: white !important;
+    }}
+
+    /* Header title */
+    h1 {{
+        color: {CAYMAN_BLUE} !important;
+        font-weight: 700 !important;
+    }}
+
+    /* Subheadline */
+    h2, h3 {{
+        color: {CAYMAN_BLUE} !important;
+        font-weight: 600 !important;
+    }}
+
+    /* Sidebar background */
+    section[data-testid="stSidebar"] {{
+        background-color: {LIGHT_BLUE} !important;
+        padding-top: 30px;
+    }}
+
+    /* Sidebar text */
+    .css-1lcbmhc, .css-1jkxaji, .css-16idsys, .css-1offfwp {{
+        color: {CAYMAN_BLUE} !important;
+    }}
+
+    /* Input box readability */
+    textarea {{
+        font-size: 1rem !important;
+        color: #111 !important;
+    }}
+
+    /* Submit button */
+    .stButton>button {{
+        background-color: {CAYMAN_BLUE};
+        color: white;
+        border-radius: 6px;
+        padding: 0.6rem 1.2rem;
+        font-size: 1rem;
+    }}
+
+    .stButton>button:hover {{
+        background-color: #002b50;
+        color: white;
+    }}
+
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+
+# ============================================================
+#  SIDEBAR
 # ============================================================
 
 def render_sidebar(con):
-    st.sidebar.title("Navigation")
+    st.sidebar.image(
+        "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Coat_of_arms_of_the_Cayman_Islands.svg/800px-Coat_of_arms_of_the_Cayman_Islands.svg.png",
+        width=120)
 
-    # -------------------------
-    # Dataset List
-    # -------------------------
-    st.sidebar.subheader("📚 Available Datasets")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        f"<h2 style='color:{CAYMAN_BLUE};'>Datasets</h2>",
+        unsafe_allow_html=True)
 
     try:
         tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
         for t in tables:
-            st.sidebar.write(f"- {t}")
+            st.sidebar.markdown(f"• **{t}**")
     except:
-        st.sidebar.write("Unable to load table list.")
+        st.sidebar.write("Dataset list unavailable.")
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        f"<h2 style='color:{CAYMAN_BLUE};'>Capabilities</h2>",
+        unsafe_allow_html=True)
 
-    # -------------------------
-    # Capabilities
-    # -------------------------
-    st.sidebar.subheader("⚙️ System Capabilities")
-    st.sidebar.write(
-        """
-        - 📊 Interactive charts  
-        - 📈 Trend analysis  
-        - 📋 Table generation  
-        - 🧠 Executive narrative  
-        - 🔎 Cross-dataset insights  
-        - 📝 Report-style responses  
-        """
-    )
+    st.sidebar.write("""
+- 📊 Charting & trend analysis  
+- 📈 Industry demand  
+- 📋 Table generation  
+- 🧠 SQL-based data insights  
+- 📘 Executive reporting  
+""")
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        f"<h2 style='color:{CAYMAN_BLUE};'>Examples</h2>",
+        unsafe_allow_html=True)
 
-    # -------------------------
-    # Recommended Prompts
-    # -------------------------
-    st.sidebar.subheader("💡 Example Questions")
-    st.sidebar.write(
-        """
-**Charts & Trends**
-- Plot job posting trends from 2019–2025.  
-- Graph Caymanian unemployment across LFS datasets.  
-- Visualize job postings by industry.  
-
-**Tables**
-- Show a table of job postings by industry.  
-- Display Caymanian vs non-Caymanian labour participation.  
-- List top occupations with growing demand.  
-
-**Executive**
-- Executive summary of Cayman workforce conditions.  
-- Explain labour market risks across SPS & LFS.  
-- Generate a workforce intelligence brief.  
-        """
-    )
+    st.sidebar.write("""
+- Plot job posting trends from 2019–2025  
+- Show Caymanian vs non-Caymanian unemployment  
+- Generate an executive summary of labour trends  
+- List the top jobs with rising demand  
+""")
 
 
 # ============================================================
-#  HEADER AREA
+#  HEADER
 # ============================================================
 
 def render_header():
-    # Cayman Crest
-    CREST_URL = (
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/"
-        "Coat_of_arms_of_the_Cayman_Islands.svg/800px-"
-        "Coat_of_arms_of_the_Cayman_Islands.svg.png"
-    )
-
-    crest = None
-    try:
-        crest_data = requests.get(CREST_URL).content
-        crest = Image.open(BytesIO(crest_data))
-    except:
-        pass
-
-    # Title + Crest
     col1, col2 = st.columns([4, 1])
 
     with col1:
         st.markdown(
-            """
-            <h1 style='margin-bottom:0;'>
-                WORC / Cayman Workforce Intelligence Assistant
-            </h1>
-            <p style='font-size:18px; margin-top:-8px; color:#003c71;'>
-                A unified labour market intelligence platform using SPS, LFS, Wage Surveys,
-                job postings, WORC data, and more.
+            f"""
+            <h1>WORC / Cayman Workforce Intelligence Assistant</h1>
+            <p style='color:{CAYMAN_BLUE}; font-size:18px; margin-top:-10px;'>
+            Using SPS, LFS, Wage Surveys, job postings, WORC data, and more to provide real-time labour insights.
             </p>
             """,
             unsafe_allow_html=True
         )
 
     with col2:
-        if crest:
-            st.markdown("<div style='text-align:right;'>", unsafe_allow_html=True)
-            st.image(crest, width=110)
-            st.markdown("</div>", unsafe_allow_html=True)
+        st.image(
+            "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Coat_of_arms_of_the_Cayman_Islands.svg/800px-Coat_of_arms_of_the_Cayman_Islands.svg.png",
+            width=110
+        )
 
-    st.markdown("---")
+    st.markdown("<hr>", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -151,60 +177,41 @@ def render_header():
 # ============================================================
 
 def main():
-    # Set page config
     st.set_page_config(
-        page_title="Cayman Workforce Intelligence Assistant",
+        page_title="Cayman Workforce Intelligence",
         layout="wide"
     )
 
-    # Custom CSS — Cayman branding
-    st.markdown(
-        """
-        <style>
-        .stApp {
-            background-color: white !important;
-        }
-        .block-container {
-            padding-top: 1rem !important;
-        }
-        h1 {
-            color: #003c71;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Load DB
+    # connect to DB
     con = load_database()
 
-    # Sidebar
+    # sidebar
     render_sidebar(con)
 
-    # Header
+    # header
     render_header()
 
-    # Input box
-    st.markdown("## Ask a Workforce Question")
+    # input section
+    st.markdown(f"<h2 style='color:{CAYMAN_BLUE};'>Ask a Workforce Question</h2>", unsafe_allow_html=True)
+
     question = st.text_area(
-        "Type your question:",
-        height=100,
+        "",
+        height=110,
         placeholder="Example: Plot job posting trends from 2019–2025..."
     )
 
     if st.button("Submit"):
         handler = route(question)
-
         try:
             result = handler(con, question)
             if isinstance(result, str):
                 st.markdown(result)
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"Error: {e}")
 
 
 # ============================================================
-#  ENTRYPOINT
+#  RUN
 # ============================================================
 
 if __name__ == "__main__":
