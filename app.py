@@ -7,7 +7,7 @@ from chat_duckdb import route
 # ---------------------------------------------------------
 CAYMAN_BLUE = "#003C71"
 CAYMAN_BLUE_DARK = "#002B52"
-SIDEBAR_BG = "#D9E5F2"   # darker blue for readability
+SIDEBAR_BG = "#003C71"   # darker blue for readability
 WHITE = "#FFFFFF"
 
 # FIXED CREST URL (PERMANENT)
@@ -56,9 +56,9 @@ st.markdown(
             margin-top: 5px;
         }}
 
-        /* SIDEBAR BACKGROUND + TEXT COLOR FIX */
-       section[data-testid="stSidebar"] {
-            background-color: #003C71 !important; /* Cayman Blue */
+       <style>
+        section[data-testid="stSidebar"] {
+            background-color: #003C71 !important;
         }}
 
         .sidebar-content * {{
