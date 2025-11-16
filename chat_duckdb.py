@@ -4,147 +4,202 @@ import plotly.express as px
 import streamlit as st
 from openai import OpenAI
 
-# OpenAI client – uses OPENAI_API_KEY from environment/Streamlit secrets
-client = OpenAI()
+client = OpenAI()  # uses OPENAI_API_KEY from environment / Streamlit secrets
 
 
 # ============================================================
-#  Helpers
+#  Utility
 # ============================================================
 
-def list_tables(con: duckdb.DuckDBPyConnection) -> list[str]:
-    """Return list of table names in the connected DuckDB database."""
+def safe_tables(con: duckdb.DuckDBPyConnection) -> list[str]:
     try:
-        return [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+        return [r[0] for r in con.execute("SHOW TABLES").fetchall()]
     except Exception:
         return []
 
 
-def clean_sql(raw_sql: str) -> str:
+def df_to_text(df: pd.DataFrame, max_rows: int = 20) -> str:
+    if df.empty:
+        return "No rows."
+    head = df.head(max_rows)
+    return head.to_markdown(index=False)
+
+
+# ============================================================
+#  1. Job-posting trend chart (WORC job postings tables)
+# ============================================================
+
+def job_posting_trend_chart(con: duckdb.DuckDBPyConnection) -> str:
     """
-    Strip markdown fences and boilerplate from LLM-generated SQL.
-    Handles ```sql, ``` and 'Generated SQL:' etc.
-    """
-    if not raw_sql:
-        return ""
-
-    sql = raw_sql
-
-    # Remove common markdown fences
-    sql = sql.replace("```sql", "")
-    sql = sql.replace("```", "")
-
-    # If the model prepends labels like 'Generated SQL:' or 'SQL:'
-    lower = sql.lower()
-    if "generated sql:" in lower:
-        sql = sql.split("Generated SQL:", 1)[-1]
-    elif "sql:" in lower:
-        # avoid cutting valid 'select' etc., only if it's clearly a label
-        parts = sql.split("SQL:", 1)
-        if len(parts) == 2 and "select" in parts[1].lower():
-            sql = parts[1]
-
-    return sql.strip()
-
-
-def llm_generate_sql(con: duckdb.DuckDBPyConnection, question: str, purpose: str = "generic") -> str:
-    """
-    Generate SQL for DuckDB using the LLM **with schema awareness**.
-    The model is given the table names AND column names so it stops hallucinating.
+    Robust, hand-written SQL to show job postings per month across WORC job posting tables.
+    Assumes these tables have a "Posting Date" column:
+      - worc_job_postings_nov_19___may_24
+      - worc_job_postings_aug_24___oct_25
+      - worc_job_postings_historical (if present)
     """
 
-    tables = list_tables(con)
+    tables = safe_tables(con)
+    source_tables = [
+        t for t in tables
+        if t.startswith("worc_job_postings_nov_19")
+        or t.startswith("worc_job_postings_aug_24")
+        or t.startswith("worc_job_postings_historical")
+    ]
 
-    # Build schema dictionary
-    schema_info = []
-    for t in tables:
+    if not source_tables:
+        return "No WORC job posting tables are available for a trend chart."
+
+    union_parts = []
+    for t in source_tables:
+        # Guard for missing column names – we inspect schema first
+        info = con.execute(f"PRAGMA table_info('{t}')").fetchdf()
+        cols = [c.lower() for c in info["name"]]
+        if "posting date" in cols:
+            col_name = info["name"][cols.index("posting date")]
+            union_parts.append(f'SELECT "{col_name}" AS posting_date FROM {t}')
+        elif "posting_date" in cols:
+            col_name = info["name"][cols.index("posting_date")]
+            union_parts.append(f'SELECT "{col_name}" AS posting_date FROM {t}')
+        else:
+            continue  # skip tables without a recognizable date column
+
+    if not union_parts:
+        return "I could not find a usable 'Posting Date' column in the WORC job posting tables."
+
+    union_sql = " UNION ALL ".join(union_parts)
+
+    sql = f"""
+    WITH all_postings AS (
+        {union_sql}
+    )
+    SELECT
+        DATE_TRUNC('month', posting_date) AS month,
+        COUNT(*) AS num_postings
+    FROM all_postings
+    WHERE posting_date IS NOT NULL
+    GROUP BY month
+    ORDER BY month;
+    """
+
+    try:
+        df = con.execute(sql).fetchdf()
+    except Exception as e:
+        return f"Error running job posting trend query:\n{e}\n\nSQL:\n{sql}"
+
+    if df.empty:
+        return "No job postings found to chart."
+
+    fig = px.line(df, x="month", y="num_postings", markers=True,
+                  title="Job postings by month (WORC)")
+    st.plotly_chart(fig, use_container_width=True)
+
+    return "Job posting trend chart generated."
+
+
+# ============================================================
+#  2. Latest total postings table (worc_data_v3_total_postings)
+# ============================================================
+
+def latest_total_postings_table(con: duckdb.DuckDBPyConnection) -> str:
+    """
+    Stable table output from worc_data_v3_total_postings.
+    We do not guess column names for ORDER BY; we just show the latest rows by whatever
+    column looks like a year or time dimension, if present.
+    """
+
+    tables = safe_tables(con)
+    if "worc_data_v3_total_postings" not in tables:
+        return "The table worc_data_v3_total_postings is not available in the database."
+
+    info = con.execute("PRAGMA table_info('worc_data_v3_total_postings')").fetchdf()
+    cols = [c.lower() for c in info["name"]]
+
+    # Try to find a year or time column to sort by
+    order_col = None
+    for candidate in ["year", "period", "time", "date"]:
+        if candidate in cols:
+            order_col = info["name"][cols.index(candidate)]
+            break
+
+    if order_col:
+        sql = f"SELECT * FROM worc_data_v3_total_postings ORDER BY \"{order_col}\" DESC LIMIT 20;"
+    else:
+        sql = "SELECT * FROM worc_data_v3_total_postings LIMIT 20;"
+
+    try:
+        df = con.execute(sql).fetchdf()
+    except Exception as e:
+        return f"Error reading worc_data_v3_total_postings:\n{e}\n\nSQL:\n{sql}"
+
+    if df.empty:
+        return "worc_data_v3_total_postings is present but returned no rows."
+
+    st.dataframe(df, use_container_width=True)
+    return "Latest rows from worc_data_v3_total_postings shown above."
+
+
+# ============================================================
+#  3. Executive / report narrative
+# ============================================================
+
+def executive_narrative(con: duckdb.DuckDBPyConnection, question: str) -> str:
+    """
+    Use LLM to write an executive-level narrative, with structured data passed in
+    from a few key tables as context. No dynamic SQL.
+    """
+
+    tables = safe_tables(con)
+
+    context_fragments = []
+
+    # Sample from WORC totals
+    if "worc_data_v3_total_postings" in tables:
         try:
-            cols = con.execute(f"PRAGMA table_info('{t}')").fetchdf()
-            col_list = ", ".join([col for col in cols["name"]])
-            schema_info.append(f"- {t}: {col_list}")
-        except:
+            df_totals = con.execute("SELECT * FROM worc_data_v3_total_postings LIMIT 50;").fetchdf()
+            context_fragments.append("WORC total postings (sample):\n" + df_to_text(df_totals, max_rows=15))
+        except Exception:
             pass
 
-    schema_text = "\n".join(schema_info) if schema_info else "(no schema available)"
+    # Sample from job postings historical series
+    for t in tables:
+        if t.startswith("worc_job_postings"):
+            try:
+                df_sample = con.execute(f"SELECT * FROM {t} LIMIT 50;").fetchdf()
+                context_fragments.append(f"{t} (sample):\n" + df_to_text(df_sample, max_rows=10))
+            except Exception:
+                pass
 
-    instructions = (
-        "Return ONLY SQL. No markdown. No fences.\n"
-        "Use EXACT column names shown in the schema.\n"
-        "If a date column exists, detect it from the schema.\n"
-        "Do NOT invent column names.\n"
-        "Do NOT guess — use ONLY columns given below.\n"
-    )
+    # SPS / LFS text tables – they are mostly unstructured text, so we just label them
+    text_tables = [t for t in tables if "sps" in t or "lfs" in t or "wage_survey" in t]
+    if text_tables:
+        context_fragments.append(f"Other text-heavy tables available: {', '.join(text_tables)}")
 
-    if purpose == "chart":
-        instructions += (
-            "SQL MUST return a date/time column and a numeric column.\n"
-            "If multiple date columns exist, prefer 'Posting Date' or 'Start Date'.\n"
-        )
-    elif purpose == "table":
-        instructions += "SQL MUST return a useful table.\n"
+    context_text = "\n\n".join(context_fragments)[:8000]  # keep prompt size reasonable
 
     prompt = f"""
-You are a DuckDB SQL generator.
+You are an expert Cayman Islands workforce analyst.
 
 User question:
 \"\"\"{question}\"\"\"
 
-Available tables and columns:
-{schema_text}
+You have the following data context (samples):
 
-{instructions}
+{context_text}
+
+Using ONLY the information implied by the data and what you know about labour markets, write a clear, C-suite level narrative addressing the user’s question. Integrate:
+- job posting trends,
+- any observable changes over time,
+- possible implications for Caymanians vs work permits,
+- and any obvious risks or opportunities.
+
+Write in 3–6 paragraphs. Do NOT show raw tables or SQL. Do NOT invent precise numbers if they are not clearly implied; describe directional trends and relationships instead.
     """
 
     resp = client.chat.completions.create(
         model="gpt-4o",
-        temperature=0,
+        temperature=0.35,
         messages=[
-            {"role": "system", "content": "Output only valid SQL for DuckDB."},
-            {"role": "user", "content": prompt}
-        ],
-    )
-
-    raw_sql = resp.choices[0].message.content
-    return clean_sql(raw_sql)
-
-
-
-# ============================================================
-#  Executive Narrative Engine
-# ============================================================
-
-def handle_executive_narrative(con: duckdb.DuckDBPyConnection, question: str) -> str:
-    """
-    Generate a C-suite style narrative using the data lake as context.
-    For now we pass the table list and user question to the model.
-    You can extend this later to include actual aggregates.
-    """
-    tables = list_tables(con)
-    table_list = ", ".join(tables) if tables else "(no tables found)"
-
-    prompt = f"""
-You are a senior Workforce Economist writing for Cayman Islands leadership.
-
-User has asked for an executive narrative:
-\"\"\"{question}\"\"\"
-
-You have access to many datasets in DuckDB with the following table names:
-{table_list}
-
-Write a concise, executive-level narrative (3–6 paragraphs) that:
-- references the types of data available (e.g., LFS, SPS, job postings, wage surveys, WORC data)
-- draws high-level insights and risks
-- uses clear, non-technical language
-- is appropriate for Cabinet-level briefing.
-
-Do NOT output SQL. Do NOT mention table names or internal schema details.
-    """
-
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": "Write clear executive-level workforce analysis."},
+            {"role": "system", "content": "Write clear, executive-level workforce analysis for Cayman Islands."},
             {"role": "user", "content": prompt},
         ],
     )
@@ -153,85 +208,45 @@ Do NOT output SQL. Do NOT mention table names or internal schema details.
 
 
 # ============================================================
-#  Chart Engine (Plotly)
+#  4. Fallback narrative (no SQL at all)
 # ============================================================
 
-def handle_chart(con: duckdb.DuckDBPyConnection, question: str) -> str:
+def fallback_narrative(con: duckdb.DuckDBPyConnection, question: str) -> str:
     """
-    Generate a Plotly chart based on LLM-generated SQL.
-    The first column is treated as x; numeric columns as y.
+    If we don't have a dedicated handler for the question, just answer in narrative form
+    without attempting SQL.
     """
-    sql = llm_generate_sql(con, question, purpose="chart")
 
-    try:
-        df = con.execute(sql).fetchdf()
-    except Exception as e:
-        return f"SQL Error when trying to build chart:\n{e}\n\nGenerated SQL:\n{sql}"
+    tables = safe_tables(con)
+    prompt = f"""
+You are an AI assistant for the Cayman Islands Workforce Intelligence platform.
 
-    if df.empty:
-        return f"No data returned for chart.\nGenerated SQL:\n{sql}"
+User question:
+\"\"\"{question}\"\"\"
 
-    # choose x and y columns
-    x_col = df.columns[0]
-    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+You have access to a DuckDB data lake with these tables:
+{', '.join(tables)}
 
-    if not numeric_cols:
-        return f"SQL returned no numeric columns to plot.\nGenerated SQL:\n{sql}"
+You are not allowed to run ad-hoc SQL for this question.
+Instead, answer conceptually based on:
+- workforce structure (Caymanian vs non-Caymanian),
+- job postings and demand,
+- skills gaps,
+- and typical labour market dynamics.
 
-    # If first column is numeric too, we still treat it as x if there is at least one other numeric
-    y_cols = numeric_cols if x_col not in numeric_cols or len(numeric_cols) == 1 else [c for c in numeric_cols if c != x_col]
-
-    try:
-        fig = px.line(df, x=x_col, y=y_cols, markers=True)
-        st.plotly_chart(fig, use_container_width=True)
-        return f"Chart generated.\nSQL used:\n{sql}"
-    except Exception as e:
-        return f"Plotting error: {e}\nGenerated SQL:\n{sql}"
-
-
-# ============================================================
-#  Table Engine
-# ============================================================
-
-def handle_table(con: duckdb.DuckDBPyConnection, question: str) -> str:
+Write a concise, direct answer in 1–3 paragraphs.
     """
-    Generate a table (dataframe) based on LLM-generated SQL.
-    """
-    sql = llm_generate_sql(con, question, purpose="table")
 
-    try:
-        df = con.execute(sql).fetchdf()
-    except Exception as e:
-        return f"SQL Error when generating table:\n{e}\n\nSQL:\n{sql}"
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.4,
+        messages=[
+            {"role": "system", "content": "Answer as a senior workforce strategist for Cayman Islands."},
+            {"role": "user", "content": prompt},
+        ],
+    )
 
-    if df.empty:
-        return f"No data returned.\nSQL:\n{sql}"
-
-    st.dataframe(df, use_container_width=True)
-    return f"Table generated.\nSQL used:\n{sql}"
-
-
-# ============================================================
-#  Generic SQL → Dataframe → Text Summary
-# ============================================================
-
-def handle_sql(con: duckdb.DuckDBPyConnection, question: str) -> str:
-    """
-    Default handler: run SQL generated from the question and show the dataframe.
-    Also return the SQL as text for transparency.
-    """
-    sql = llm_generate_sql(con, question, purpose="generic")
-
-    try:
-        df = con.execute(sql).fetchdf()
-    except Exception as e:
-        return f"SQL Error:\n{e}\n\nSQL:\n{sql}"
-
-    if df.empty:
-        return f"No data returned.\nSQL:\n{sql}"
-
-    st.dataframe(df, use_container_width=True)
-    return f"SQL used:\n{sql}"
+    return resp.choices[0].message.content
 
 
 # ============================================================
@@ -240,23 +255,25 @@ def handle_sql(con: duckdb.DuckDBPyConnection, question: str) -> str:
 
 def route(question: str):
     """
-    Decide which handler to use based on keywords in the user's question.
+    Decide which capability to use based on the question.
     Returns a function that accepts (con, question).
     """
+
     q = (question or "").lower()
 
-    # Chart intent
-    if any(word in q for word in ["chart", "plot", "graph", "visualize", "trend", "time series"]):
-        return handle_chart
+    # Job posting trend chart capability
+    if ("job posting" in q or "postings" in q or "vacancy" in q) and (
+        "chart" in q or "plot" in q or "graph" in q or "trend" in q
+    ):
+        return job_posting_trend_chart
 
-    # Table intent
-    if any(word in q for word in ["table", "list", "rows", "show me", "display"]):
-        return handle_table
+    # Table of latest total postings
+    if "total postings" in q or "worc_data_v3_total_postings" in q:
+        return latest_total_postings_table
 
-    # Executive narrative / report
-    if any(word in q for word in ["executive", "summary", "brief", "narrative", "report", "analysis"]):
-        # wrap in a lambda to match (con, question) signature
-        return lambda con, q: handle_executive_narrative(con, q)
+    # Executive summary / report-like questions
+    if any(word in q for word in ["executive", "summary", "brief", "report", "analysis", "narrative"]):
+        return lambda con, q: executive_narrative(con, q)
 
-    # Fallback: generic SQL
-    return handle_sql
+    # Fallback: narrative only, no SQL
+    return fallback_narrative
