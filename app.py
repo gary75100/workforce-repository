@@ -92,7 +92,7 @@ def get_sps_context(topic: str) -> pd.DataFrame:
 # ----------------------------------------------------
 def ask_gpt(prompt: str, system_msg: str = "You are a helpful Cayman workforce and policy analyst."):
     """
-    NEW OpenAI API – works with GPT-4o.
+    NEW OpenAI API – correct schema for GPT-4o on Streamlit Cloud.
     """
     response = client.chat.completions.create(
         model=MODEL_NAME,
@@ -103,7 +103,10 @@ def ask_gpt(prompt: str, system_msg: str = "You are a helpful Cayman workforce a
         temperature=0.2,
         max_tokens=700
     )
-    return response.choices[0].message["content"].strip()
+
+    # FIX: correct field access for new API
+    return response.choices[0].message.content.strip()
+
 
 # ----------------------------------------------------
 # LAYOUT / TABS
