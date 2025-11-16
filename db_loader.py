@@ -18,8 +18,7 @@ def ensure_database(db_path: str = "cayman_workforce.duckdb") -> str:
 
     url = st.secrets["DB_URL"]
 
-    # Streamlit Cloud: download DB into container
-    st.write(f"Downloading database from {url} ...")
+    st.write(f"Downloading workforce database from GitHub Releases...")
 
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
@@ -30,4 +29,5 @@ def ensure_database(db_path: str = "cayman_workforce.duckdb") -> str:
 
     st.write("Database downloaded successfully.")
     return db_path
+
 
