@@ -25,86 +25,32 @@ st.set_page_config(
 # ---------------------------------------------------------
 # GLOBAL CAYMAN STYLE FIXES
 # ---------------------------------------------------------
-st.markdown(
-    f"""
-    <style>
+st.markdown("""
+<style>
+/* FULL SIDEBAR STYLE BLOCK */
 
-        /* GLOBAL FONT + BACKGROUND */
-        .stApp {{
-            background-color: {WHITE} !important;
-            font-family: "Segoe UI", sans-serif;
-        }}
+section[data-testid="stSidebar"] {
+    background-color: #003C71 !important;   /* Cayman Blue */
+    color: white !important;
+}
 
-        /* HEADER BLUE BAR */
-        .header {{
-            background-color: {CAYMAN_BLUE};
-            padding: 30px 20px 25px 20px;
-            border-radius: 0px 0px 10px 10px;
-            margin-bottom: 25px;
-        }}
+section[data-testid="stSidebar"] * {
+    color: white !important;                /* Make all sidebar text white */
+    font-weight: 600 !important;
+}
 
-        .header h1 {{
-            color: white !important;
-            font-size: 40px;
-            font-weight: 800;
-            margin-bottom: -5px;
-        }}
+/* Fix sidebar headers */
+.sidebar-title, .sidebar-section {
+    color: white !important;
+}
 
-        .header-sub {{
-            color: white !important;
-            font-size: 18px;
-            margin-top: 5px;
-        }}
+/* Fix list bullets */
+ul, li, p {
+    color: white !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
-       <style>
-        section[data-testid="stSidebar"] {
-            background-color: #003C71 !important;
-        }}
-
-        .sidebar-content * {{
-            color: {CAYMAN_BLUE} !important;
-            font-weight: 600 !important;
-        }}
-
-        .sidebar-title {{
-            font-size: 22px;
-            color: {CAYMAN_BLUE};
-            font-weight: 800 !important;
-            margin-top: 20px;
-        }}
-
-        /* QUESTION BOX FIX */
-        textarea {{
-            background-color: #1E1E1E !important;
-            color: white !important;
-            border-radius: 8px !important;
-            font-size: 1.1rem !important;
-            padding: 10px !important;
-        }}
-        textarea::placeholder {{
-            color: #CCCCCC !important;
-        }}
-
-        /* BUTTON FIX */
-        .stButton>button {{
-            background-color: {CAYMAN_BLUE} !important;
-            color: white !important;
-            border-radius: 6px;
-            padding: 0.65rem 1.3rem;
-            font-size: 1.05rem;
-            border: none;
-        }}
-
-        /* DATAFRAME */
-        .stDataFrame td, .stDataFrame th {{
-            color: {CAYMAN_BLUE} !important;
-            background-color: white !important;
-        }}
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 
 # ---------------------------------------------------------
 # Load DB From S3
