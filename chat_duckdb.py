@@ -4,278 +4,272 @@ import plotly.express as px
 import streamlit as st
 from openai import OpenAI
 
-
-client = OpenAI()
+client = OpenAI()  # uses OPENAI_API_KEY from environment / Streamlit secrets
 
 
 # ============================================================
-#  CORE UTILITIES
+# Helpers
 # ============================================================
 
 def list_tables(con):
     try:
         return [r[0] for r in con.execute("SHOW TABLES").fetchall()]
-    except:
+    except Exception:
         return []
 
 
-def get_schema(con):
-    """Return {table: [cols]} for all tables."""
-    tables = list_tables(con)
-    schema = {}
-    for t in tables:
-        try:
-            df = con.execute(f"PRAGMA table_info('{t}')").fetchdf()
-            schema[t] = list(df["name"])
-        except:
-            schema[t] = []
-    return schema
-
-
-def clean_sql(sql):
-    if not sql:
-        return ""
-    sql = (
-        sql.replace("```sql", "")
-        .replace("```", "")
-        .replace("`", "")
-        .strip()
-    )
-    lower = sql.lower()
-    if "generated sql:" in lower:
-        sql = sql.split("generated sql:", 1)[-1]
-    if sql.lower().startswith("sql:"):
-        sql = sql.split(":", 1)[-1]
-    return sql.strip()
+def safe_sample(con, table_name, limit=20):
+    try:
+        return con.execute(f"SELECT * FROM {table_name} LIMIT {limit}").fetchdf()
+    except Exception:
+        return pd.DataFrame()
 
 
 # ============================================================
-#  DATASET CLASSIFICATION
+# Charts: Unified Job Posting Trend (2019–2025)
 # ============================================================
 
-def classify_tables(con):
+def plot_job_posting_trend(con, question: str) -> str:
     tables = list_tables(con)
-    groups = {"lfs": [], "sps": [], "job": [], "worc": [], "other": []}
-    for t in tables:
-        name = t.lower()
-        if "lfs" in name:
-            groups["lfs"].append(t)
-        elif "sps" in name:
-            groups["sps"].append(t)
-        elif "job_postings" in name:
-            groups["job"].append(t)
-        elif "worc_data_v3" in name:
-            groups["worc"].append(t)
+
+    # Identify posting tables
+    posting_tables = [
+        t for t in tables
+        if t.startswith("worc_job_postings_historical")
+        or t.startswith("worc_job_postings_nov_19___may_24")
+        or t.startswith("worc_job_postings_aug_24___oct_25")
+    ]
+
+    if not posting_tables:
+        return "No WORC job posting tables are available for a trend chart."
+
+    union_parts = []
+
+    # historical + nov_19 use TIMESTAMP_NS Posting Date
+    for t in posting_tables:
+        if t == "worc_job_postings_aug_24___oct_25":
+            # Posting Date is VARCHAR here; cast to DATE
+            union_parts.append(
+                f"""
+                SELECT TRY_CAST("Posting Date" AS DATE) AS posting_date
+                FROM {t}
+                """
+            )
         else:
-            groups["other"].append(t)
-    return groups
+            # TIMESTAMP_NS → DATE
+            union_parts.append(
+                f"""
+                SELECT CAST("Posting Date" AS DATE) AS posting_date
+                FROM {t}
+                """
+            )
 
+    union_sql = " UNION ALL ".join(union_parts)
 
-# ============================================================
-#  SCHEMA-AWARE + DATASET-AWARE SQL GENERATION
-# ============================================================
-
-def generate_sql(con, question, purpose):
-    question_lower = question.lower()
-
-    schema = get_schema(con)
-    groups = classify_tables(con)
-    all_tables = list(schema.keys())
-
-    # PICK TABLES BY TOPIC
-    relevant = []
-
-    if any(w in question_lower for w in ["unemployment", "labour force", "caymanian", "jobless"]):
-        relevant += groups["lfs"]
-
-    if any(w in question_lower for w in ["job posting", "vacancy", "postings", "industry demand"]):
-        relevant += groups["job"]
-
-    if "sps" in question_lower:
-        relevant += groups["sps"]
-
-    if "worc" in question_lower or "v3" in question_lower:
-        relevant += groups["worc"]
-
-    if not relevant:
-        relevant = all_tables
-
-    # BUILD SCHEMA TEXT FOR PROMPT
-    schema_lines = []
-    for t in relevant:
-        cols = schema[t]
-        schema_lines.append(f"- {t}: {', '.join(cols)}")
-    schema_text = "\n".join(schema_lines)
-
-    # BUILD PROMPT
-    instructions = (
-        "Return ONLY SQL. No markdown. "
-        "Use EXACT column names from schema. "
-        "Do NOT invent or guess columns. "
-        "If question needs a time trend, pick the most date-like column."
+    sql = f"""
+    WITH all_postings AS (
+        {union_sql}
     )
+    SELECT
+        DATE_TRUNC('month', posting_date) AS month,
+        COUNT(*)::BIGINT AS postings
+    FROM all_postings
+    WHERE posting_date IS NOT NULL
+      AND posting_date BETWEEN DATE '2019-01-01' AND DATE '2025-12-31'
+    GROUP BY month
+    ORDER BY month;
+    """
 
-    if purpose == "chart":
-        instructions += " SQL must return a date/time column + a numeric column suitable for plotting."
-    if purpose == "table":
-        instructions += " SQL must return a meaningful table."
-    if purpose == "generic":
-        instructions += " SQL must answer the question directly."
+    try:
+        df = con.execute(sql).fetchdf()
+    except Exception as e:
+        return f"Error generating job posting trend chart:\n{e}\n\nSQL:\n{sql}"
+
+    if df.empty:
+        return "No job postings found in the specified period."
+
+    fig = px.line(df, x="month", y="postings", markers=True,
+                  title="Job Posting Trend (2019–2025, WORC Job Postings)")
+    st.plotly_chart(fig, use_container_width=True)
+
+    return "Job posting trend chart generated."
+
+
+# ============================================================
+# Tables: Safe Table Viewer
+# ============================================================
+
+def show_table(con, question: str) -> str:
+    q = (question or "").lower()
+    tables = list_tables(con)
+    if not tables:
+        return "No tables available in the database."
+
+    # If user references a specific table name, use that
+    target = None
+    for t in tables:
+        if t.lower() in q:
+            target = t
+            break
+
+    # Otherwise default priority: WORC v3 totals → job postings → first table
+    if not target:
+        if "worc_data_v3_total_postings" in tables:
+            target = "worc_data_v3_total_postings"
+        elif any(t.startswith("worc_job_postings") for t in tables):
+            target = [t for t in tables if t.startswith("worc_job_postings")][0]
+        else:
+            target = tables[0]
+
+    try:
+        df = con.execute(f"SELECT * FROM {target} LIMIT 200").fetchdf()
+    except Exception as e:
+        return f"Error reading table {target}:\n{e}"
+
+    if df.empty:
+        return f"Table {target} is present but returned no rows."
+
+    st.dataframe(df, use_container_width=True)
+    return f"Showing first 200 rows from `{target}`."
+
+
+# ============================================================
+# Narratives: Executive-Level Summaries
+# ============================================================
+
+def generate_executive_narrative(con, question: str) -> str:
+    tables = list_tables(con)
+
+    context_chunks = []
+
+    # SPS
+    sps_tables = [t for t in tables if t.startswith("sps")]
+    for t in sps_tables:
+        df = safe_sample(con, t, 10)
+        if not df.empty:
+            context_chunks.append(f"SPS ({t}) sample:\n" + df.to_string(index=False))
+
+    # LFS
+    lfs_tables = [t for t in tables if t.startswith("lfs")]
+    for t in lfs_tables:
+        df = safe_sample(con, t, 10)
+        if not df.empty:
+            context_chunks.append(f"LFS ({t}) sample:\n" + df.to_string(index=False))
+
+    # Wage survey
+    wage_tables = [t for t in tables if "wage" in t.lower()]
+    for t in wage_tables:
+        df = safe_sample(con, t, 10)
+        if not df.empty:
+            context_chunks.append(f"Wage survey ({t}) sample:\n" + df.to_string(index=False))
+
+    # WORC v3 totals
+    if "worc_data_v3_total_postings" in tables:
+        df = safe_sample(con, "worc_data_v3_total_postings", 20)
+        if not df.empty:
+            context_chunks.append(
+                "WORC Data v3 Total Postings sample:\n" + df.to_string(index=False)
+            )
+
+    # WORC job postings
+    posting_tables = [t for t in tables if t.startswith("worc_job_postings")]
+    for t in posting_tables:
+        df = safe_sample(con, t, 10)
+        if not df.empty:
+            context_chunks.append(f"Job postings ({t}) sample:\n" + df.to_string(index=False))
+
+    context = "\n\n".join(context_chunks)[:9000]
 
     prompt = f"""
-You are a DuckDB SQL generator.
+You are a senior strategist for the Cayman Islands Government,
+writing for Ministers and Cabinet-level leadership.
 
 User question:
 \"\"\"{question}\"\"\"
 
-Relevant tables and columns:
-{schema_text}
-
-{instructions}
-"""
-
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0,
-        messages=[
-            {"role": "system", "content": "Output ONLY valid DuckDB SQL."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    raw_sql = resp.choices[0].message.content
-    return clean_sql(raw_sql)
-
-
-# ============================================================
-#  CHART ENGINE
-# ============================================================
-
-def handle_chart(con, question):
-    sql = generate_sql(con, question, "chart")
-
-    try:
-        df = con.execute(sql).fetchdf()
-    except Exception as e:
-        return f"SQL Error:\n{e}\n\nSQL:\n{sql}"
-
-    if df.empty:
-        return f"No data returned.\nSQL:\n{sql}"
-
-    x = df.columns[0]
-    numeric = df.select_dtypes(include="number").columns.tolist()
-    if not numeric:
-        return f"No numeric fields to chart.\nSQL:\n{sql}"
-
-    y = numeric
-
-    fig = px.line(df, x=x, y=y, markers=True)
-    st.plotly_chart(fig, use_container_width=True)
-    return f"Chart generated.\nSQL:\n{sql}"
-
-
-# ============================================================
-#  TABLE ENGINE
-# ============================================================
-
-def handle_table(con, question):
-    sql = generate_sql(con, question, "table")
-
-    try:
-        df = con.execute(sql).fetchdf()
-    except Exception as e:
-        return f"SQL Error:\n{e}\n\nSQL:\n{sql}"
-
-    if df.empty:
-        return f"No data returned.\nSQL:\n{sql}"
-
-    st.dataframe(df, use_container_width=True)
-    return f"Table generated.\nSQL:\n{sql}"
-
-
-# ============================================================
-#  EXECUTIVE NARRATIVE ENGINE
-# ============================================================
-
-def handle_narrative(con, question):
-    tables = list_tables(con)
-
-    # sample from tables
-    samples = []
-    for t in tables:
-        try:
-            df = con.execute(f"SELECT * FROM {t} LIMIT 5").fetchdf()
-            samples.append(f"TABLE {t} SAMPLE:\n{df.to_string(index=False)}")
-        except:
-            pass
-
-    context = "\n\n".join(samples)[:7000]
-
-    prompt = f"""
-You are an expert Cayman Islands workforce strategist.
-
-User asked:
-\"\"\"{question}\"\"\"
-
-Here is sample data from the workforce data lake:
+Below is structured sample data from the Cayman Workforce Data Lake:
 {context}
 
-Write a clear executive-level narrative with:
-- labour force trends
-- Caymanian vs non-Caymanian dynamics
-- unemployment themes
-- industry demand signals
-- SPS + WORC implications
+Write a clear, executive-level narrative (3–6 paragraphs) that:
+- Uses the sample data conceptually (no made-up precise figures)
+- Discusses labour demand, supply, и job posting trends
+- Mentions relationships between SPS, LFS, wage data, and WORC postings
+- Clearly outlines key risks and opportunities for Caymanians
+- Avoids jargon and is suitable for non-technical decision-makers
 
-Do NOT mention table names or SQL.
-Write naturally, as if for Cabinet-level briefing.
+Do NOT include SQL.
+Do NOT mention table names explicitly.
+Focus on insights and implications.
 """
 
     resp = client.chat.completions.create(
         model="gpt-4o",
-        temperature=0.4,
+        temperature=0.35,
         messages=[
-            {"role": "system", "content": "Provide executive workforce analysis."},
-            {"role": "user", "content": prompt}
-        ]
+            {"role": "system", "content": "You write clear, concise executive-level labour market analysis."},
+            {"role": "user", "content": prompt},
+        ],
     )
 
     return resp.choices[0].message.content
 
 
 # ============================================================
-#  GENERIC SQL
+# Fallback: Conceptual Answer (No SQL)
 # ============================================================
 
-def handle_sql(con, question):
-    sql = generate_sql(con, question, "generic")
+def fallback_answer(con, question: str) -> str:
+    tables = list_tables(con)
 
-    try:
-        df = con.execute(sql).fetchdf()
-    except Exception as e:
-        return f"SQL Error:\n{e}\n\nSQL:\n{sql}"
+    prompt = f"""
+You are an AI assistant for the Cayman Islands Workforce Intelligence platform.
 
-    if df.empty:
-        return f"No data returned.\nSQL:\n{sql}"
+User question:
+\"\"\"{question}\"\"\"
 
-    st.dataframe(df, use_container_width=True)
-    return f"SQL:\n{sql}"
+You have access to a DuckDB workforce data lake with tables:
+{', '.join(tables)}
+
+Without running SQL, answer the question conceptually.
+Draw on typical Cayman labour dynamics:
+- labour force (Caymanian vs non-Caymanian),
+- WORC job postings trends,
+- SPS strategic concerns,
+- wage and industry structure.
+
+Write 1–3 paragraphs, using plain business language.
+"""
+
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.4,
+        messages=[
+            {"role": "system", "content": "You are a pragmatic, honest workforce strategist."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+    return resp.choices[0].message.content
 
 
 # ============================================================
-#  ROUTER
+# ROUTER
 # ============================================================
 
 def route(question: str):
-    q = question.lower()
+    q = (question or "").lower()
 
-    if any(w in q for w in ["chart", "plot", "graph", "trend", "visualize"]):
-        return handle_chart
+    # Chart / Trend requests
+    if any(w in q for w in ["chart", "plot", "graph", "trend", "time series", "visualize"]):
+        return plot_job_posting_trend
 
-    if any(w in q for w in ["table", "list", "rows", "show"]):
-        return handle_table
+    # Table requests
+    if any(w in q for w in ["table", "rows", "show me", "list", "view data"]):
+        return show_table
 
-    if any(w in q for w in ["executive", "summary", "brief", "narrative", "report"]):
-        return handle_narrative
+    # Executive narrative / reports
+    if any(w in q for w in ["executive", "summary", "brief", "narrative", "report", "analysis"]):
+        return generate_executive_narrative
 
-    return handle_sql
+    # Default: conceptual narrative
+    return fallback_answer
