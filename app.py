@@ -2,7 +2,9 @@ import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
-import openai
+
+from openai import OpenAI       # <-- NEW
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])   # <-- NEW
 
 # ----------------------------------------------------
 # CONFIG / CONNECTIONS
@@ -22,7 +24,7 @@ def run_sql(sql: str) -> pd.DataFrame:
     return conn.execute(sql).df()
 
 # OpenAI client (expects OPENAI_API_KEY in .streamlit/secrets.toml)
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+
 
 MODEL_NAME = "gpt-4o"  # recommended for this app
 
@@ -89,18 +91,19 @@ def get_sps_context(topic: str) -> pd.DataFrame:
 # OPENAI HELPER
 # ----------------------------------------------------
 def ask_gpt(prompt: str, system_msg: str = "You are a helpful Cayman workforce and policy analyst."):
-    """Call GPT-4o with a simple system + user message."""
-    resp = openai.ChatCompletion.create(
+    """
+    NEW OpenAI API – works with GPT-4o.
+    """
+    response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=700,
         temperature=0.2,
+        max_tokens=700
     )
-    return resp["choices"][0]["message"]["content"].strip()
-
+    return response.choices[0].message["content"].strip()
 
 # ----------------------------------------------------
 # LAYOUT / TABS
