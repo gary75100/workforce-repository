@@ -57,9 +57,9 @@ st.markdown(
         }}
 
         /* SIDEBAR BACKGROUND + TEXT COLOR FIX */
-        section[data-testid="stSidebar"] {{
-            background-color: {SIDEBAR_BG} !important;
-        }}
+       section[data-testid="stSidebar"] {
+    background-color: #003C71 !important;   /* Cayman Blue */
+}]
 
         .sidebar-content * {{
             color: {CAYMAN_BLUE} !important;
