@@ -7,14 +7,11 @@ from chat_duckdb import route
 # ---------------------------------------------------------
 CAYMAN_BLUE = "#003C71"
 CAYMAN_BLUE_DARK = "#002B52"
-CAYMAN_LIGHT = "#E6EFF7"
-CAYMAN_WHITE = "#FFFFFF"
+SIDEBAR_BG = "#D9E5F2"   # darker blue for readability
+WHITE = "#FFFFFF"
 
-CREST_URL = (
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/"
-    "Coat_of_arms_of_the_Cayman_Islands.svg/400px-"
-    "Coat_of_arms_of_the_Cayman_Islands.svg.png"
-)
+# FIXED CREST URL (PERMANENT)
+CREST_URL = "https://raw.githubusercontent.com/gary75100/workforce-repository/main/cayman_crest.png"
 
 # ---------------------------------------------------------
 # Streamlit Page Config
@@ -26,87 +23,82 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Global Styling (Cayman UI Overhaul)
+# GLOBAL CAYMAN STYLE FIXES
 # ---------------------------------------------------------
 st.markdown(
     f"""
     <style>
-        /* GLOBAL */
+
+        /* GLOBAL FONT + BACKGROUND */
         .stApp {{
-            background-color: {CAYMAN_WHITE} !important;
-            font-family: 'Segoe UI', sans-serif;
+            background-color: {WHITE} !important;
+            font-family: "Segoe UI", sans-serif;
         }}
 
-        /* Cayman Blue Header Bar */
-        .header-container {{
+        /* HEADER BLUE BAR */
+        .header {{
             background-color: {CAYMAN_BLUE};
-            padding: 25px;
-            border-radius: 0px 0px 8px 8px;
-            margin-bottom: 20px;
+            padding: 30px 20px 25px 20px;
+            border-radius: 0px 0px 10px 10px;
+            margin-bottom: 25px;
         }}
 
-        h1 {{
+        .header h1 {{
             color: white !important;
-            font-weight: 800 !important;
+            font-size: 40px;
+            font-weight: 800;
+            margin-bottom: -5px;
         }}
 
-        .subtitle {{
+        .header-sub {{
             color: white !important;
-            font-size: 18px !important;
-            margin-top: -5px !important;
-        }}
-
-        /* Tabs */
-        .stTabs [data-baseweb="tab"] {{
             font-size: 18px;
-            color: {CAYMAN_BLUE};
-            font-weight: 600;
+            margin-top: 5px;
         }}
 
-        /* Sidebar */
+        /* SIDEBAR BACKGROUND + TEXT COLOR FIX */
         section[data-testid="stSidebar"] {{
-            background-color: {CAYMAN_LIGHT} !important;
+            background-color: {SIDEBAR_BG} !important;
         }}
 
-        /* Sidebar text */
+        .sidebar-content * {{
+            color: {CAYMAN_BLUE} !important;
+            font-weight: 600 !important;
+        }}
+
         .sidebar-title {{
+            font-size: 22px;
             color: {CAYMAN_BLUE};
-            font-size: 20px;
-            font-weight: 700;
+            font-weight: 800 !important;
             margin-top: 20px;
         }}
 
-        .sidebar-section {{
-            color: {CAYMAN_BLUE};
-            font-size: 16px;
-            font-weight: 600;
-            margin-top: 15px;
-        }}
-
-        /* Question box */
+        /* QUESTION BOX FIX */
         textarea {{
             background-color: #1E1E1E !important;
             color: white !important;
             border-radius: 8px !important;
             font-size: 1.1rem !important;
+            padding: 10px !important;
         }}
         textarea::placeholder {{
             color: #CCCCCC !important;
         }}
 
-        /* Submit button */
+        /* BUTTON FIX */
         .stButton>button {{
             background-color: {CAYMAN_BLUE} !important;
             color: white !important;
-            padding: 0.65rem 1.3rem;
             border-radius: 6px;
+            padding: 0.65rem 1.3rem;
             font-size: 1.05rem;
+            border: none;
         }}
 
-        /* Dataframes */
+        /* DATAFRAME */
         .stDataFrame td, .stDataFrame th {{
-            background-color: {CAYMAN_WHITE} !important;
             color: {CAYMAN_BLUE} !important;
+            background-color: white !important;
         }}
 
     </style>
@@ -128,39 +120,39 @@ def load_database():
         tmp.flush()
     return duckdb.connect(tmp.name)
 
-
 # ---------------------------------------------------------
 # Sidebar (Capabilities → Examples → Datasets)
 # ---------------------------------------------------------
 def render_sidebar(con):
 
-    st.sidebar.image(CREST_URL, width=110)
+    st.sidebar.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
 
+    # CREST FIX
+    st.sidebar.image(CREST_URL, width=120)
+
+    # CAPABILITIES
     st.sidebar.markdown('<div class="sidebar-title">Capabilities</div>', unsafe_allow_html=True)
-    st.sidebar.write(
-        """
+    st.sidebar.write("""
 - 📊 Charts & Trends  
 - 📈 Labour Force Analytics  
 - 📋 Table Generation  
-- 🧠 AI-Generated SQL Insights  
+- 🧠 AI SQL Insights  
 - 📝 Executive Reports  
 - 🔎 Cross-Dataset Intelligence  
-"""
-    )
+""")
 
+    # QUESTIONS
     st.sidebar.markdown('<div class="sidebar-title">Suggested Questions</div>', unsafe_allow_html=True)
-    st.sidebar.write(
-        """
-- Plot job posting trends (2019–2025)  
-- Show Caymanian vs non-Caymanian unemployment  
-- List top occupations by demand  
+    st.sidebar.write("""
+- Plot job posting trends  
+- Compare Caymanian vs non-Caymanian unemployment  
+- Top occupations by demand  
 - Workforce summary for policymakers  
-"""
-    )
+""")
 
+    # DATA SOURCES
     st.sidebar.markdown('<div class="sidebar-title">Data Sources</div>', unsafe_allow_html=True)
 
-    # Group datasets
     try:
         tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
 
@@ -174,19 +166,14 @@ def render_sidebar(con):
     except:
         lfs = sps = wage = worc_v3 = postings = other = []
 
-    if sps:
-        st.sidebar.markdown('<div class="sidebar-section">• SPS – Strategic Policy Statements</div>', unsafe_allow_html=True)
-    if lfs:
-        st.sidebar.markdown('<div class="sidebar-section">• Labour Force Survey (LFS)</div>', unsafe_allow_html=True)
-    if wage:
-        st.sidebar.markdown('<div class="sidebar-section">• Wage Survey</div>', unsafe_allow_html=True)
-    if worc_v3:
-        st.sidebar.markdown('<div class="sidebar-section">• WORC Workforce Data (v3)</div>', unsafe_allow_html=True)
-    if postings:
-        st.sidebar.markdown('<div class="sidebar-section">• WORC Job Postings</div>', unsafe_allow_html=True)
+    if sps: st.sidebar.markdown("**• SPS — Strategic Policy Statements**")
+    if lfs: st.sidebar.markdown("**• Labour Force Survey (LFS)**")
+    if wage: st.sidebar.markdown("**• Wage Survey**")
+    if worc_v3: st.sidebar.markdown("**• WORC Workforce Data (v3)**")
+    if postings: st.sidebar.markdown("**• WORC Job Postings**")
+    if other: st.sidebar.markdown("**• Other / Experimental**")
 
-    if other:
-        st.sidebar.markdown('<div class="sidebar-section">• Other / Experimental</div>', unsafe_allow_html=True)
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------
@@ -195,9 +182,9 @@ def render_sidebar(con):
 def render_header():
     st.markdown(
         f"""
-        <div class="header-container">
+        <div class="header">
             <h1>WORC / Cayman Workforce Intelligence Assistant</h1>
-            <div class="subtitle">
+            <div class="header-sub">
                 Real-time insights from SPS, LFS, Wage Surveys, WORC data, and job postings.
             </div>
         </div>
@@ -215,7 +202,7 @@ def main():
     render_sidebar(con)
     render_header()
 
-    st.markdown("## Ask a Workforce Question")
+    st.markdown(f"## Ask a Workforce Question", unsafe_allow_html=True)
 
     question = st.text_area(
         "",
@@ -223,7 +210,6 @@ def main():
         placeholder="Example: Plot job posting trends from 2019–2025…"
     )
 
-    # Tabbed results interface
     if st.button("Submit"):
         handler = route(question)
         try:
