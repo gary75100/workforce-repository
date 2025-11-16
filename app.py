@@ -141,10 +141,18 @@ You MUST respond ONLY with valid JSON of the form:
 
 RULES:
 - SQL must be READ-ONLY (only SELECT; no UPDATE, DELETE, INSERT, ALTER, DROP).
-- SQL must use existing curated tables (schema 'curated' or 'main').
-- The chart_code must assume a pandas DataFrame named df is available,
-  returned by executing the SQL.
-- Use Plotly Express (px).
+- For job postings, you MUST ALWAYS use this table:
+    curated.fact_job_posting
+- Valid job posting fields are:
+    posted_date, industry, employer_name, occupation, salary_min, salary_max,
+    annual_salary_mean, work_type
+- NEVER use tables with names worc_job_postings_*, *_historical, *_nov_*, *_aug_*.
+  Those DO NOT exist.
+- For wages, use curated.fact_wages.
+- For labour force, use curated.fact_lfs_*.
+- The chart_code must assume a pandas DataFrame named df.
+- Use Plotly Express (px) ONLY.
+- Return ONLY JSON with keys: sql, chart_code, explanation.
 
 Here is some optional sample data (may be empty):
 {sample_data}
