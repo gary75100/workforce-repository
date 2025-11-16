@@ -13,7 +13,10 @@ st.set_page_config(
 )
 
 # DuckDB connection (make sure this matches your filename)
-conn = duckdb.connect("cayman_workforce.duckdb", read_only=False)
+from db_loader import ensure_database
+
+db_path = ensure_database()
+conn = duckdb.connect(db_path, read_only=False)
 
 def run_sql(sql: str) -> pd.DataFrame:
     return conn.execute(sql).df()
