@@ -11,7 +11,8 @@ SIDEBAR_BG = "#003C71"   # darker blue for readability
 WHITE = "#FFFFFF"
 
 # FIXED CREST URL (PERMANENT)
-CREST_URL = "https://raw.githubusercontent.com/gary75100/workforce-repository/main/cayman_crest.png"
+CREST_URL = "https://raw.githubusercontent.com/gary75100/workforce-repository/main/coat%20of%20Arms.gif"
+             width="110"
 
 # ---------------------------------------------------------
 # Streamlit Page Config
