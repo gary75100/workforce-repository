@@ -10,9 +10,6 @@ CAYMAN_BLUE_DARK = "#002B52"
 SIDEBAR_BG = "#003C71"   # darker blue for readability
 WHITE = "#FFFFFF"
 
-# FIXED CREST URL (PERMANENT)
-CREST_URL = "https://raw.githubusercontent.com/gary75100/workforce-repository/main/coat%20of%20Arms.gif"
-             width="110"
 
 # ---------------------------------------------------------
 # Streamlit Page Config
@@ -22,6 +19,21 @@ st.set_page_config(
     layout="wide",
     page_icon=CREST_URL
 )
+# Insert Cayman Crest (Top Right) - Safe Standalone Block
+crest_html = """
+<div style="
+     position: absolute;
+     top: 15px;
+     right: 30px;
+     z-index: 9999;
+">
+    <img src="https://raw.githubusercontent.com/gary75100/workforce-repository/main/coat%20of%20Arms.gif"
+         width="110"
+         style="border-radius: 0px;">
+</div>
+"""
+
+st.markdown(crest_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # GLOBAL CAYMAN STYLE FIXES
