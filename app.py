@@ -107,6 +107,56 @@ def ask_gpt(prompt: str, system_msg: str = "You are a helpful Cayman workforce a
     # FIX: correct field access for new API
     return response.choices[0].message.content.strip()
 
+import json
+import traceback
+
+def ask_gpt_for_chart(user_query: str, sample_data: str = "", system_msg="You are a Cayman workforce analytics assistant."):
+    """
+    Ask GPT to generate:
+    - safe SQL query
+    - Plotly chart code
+    - narrative explanation
+    
+    Returns dict with keys: sql, chart_code, explanation.
+    """
+
+    prompt = f"""
+You are an analytics copilot for Cayman workforce intelligence. 
+The user asked: {user_query}
+
+You MUST respond ONLY in JSON with keys:
+- "sql": A safe SQL SELECT statement (DuckDB-compatible)
+- "chart_code": A Plotly chart using df (the dataframe returned from SQL)
+- "explanation": A brief narrative explaining the chart
+
+RULES:
+- SQL must be read-only (no UPDATE/DELETE/INSERT/ALTER/DROP)
+- SQL must reference only tables available in the curated schema
+- Chart code must assume df is preloaded: example: fig = px.line(df, x='col1', y='col2')
+- Only return valid JSON.
+
+Here is sample data that may help:
+{sample_data}
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2,
+        max_tokens=800
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    # Parse JSON safely
+    try:
+        parsed = json.loads(text)
+        return parsed
+    except Exception:
+        return {"error": "Invalid JSON from GPT", "raw": text, "trace": traceback.format_exc()}
 
 # ----------------------------------------------------
 # LAYOUT / TABS
@@ -133,23 +183,49 @@ with tab_chat:
         key="user_question_chat"
     )
 
-    if user_q:
-        topic = pick_topic(user_q)
-        st.info(f"Detected topic: **{topic}**")
+ if user_q:
 
-        tables = get_tables_for_topic(topic)
-        main_table = tables[0] if tables else None
+    # Try custom chart generation based on user request
+    if "plot" in user_q.lower() or "chart" in user_q.lower() or "graph" in user_q.lower():
 
-        df = pd.DataFrame()
-        data_snippet = ""
-        if main_table:
+        chart_result = ask_gpt_for_chart(user_q)
+
+        # If GPT returned an error, fall back
+        if "error" in chart_result:
+            st.error("GPT could not generate a chart. Showing raw output.")
+            st.text(chart_result["raw"])
+        else:
+            sql = chart_result["sql"]
+            code = chart_result["chart_code"]
+            explanation = chart_result["explanation"]
+
+            st.markdown("### Generated SQL")
+            st.code(sql)
+
             try:
-                # pull a small sample from the relevant table
-                df = run_sql(f"SELECT * FROM {main_table} LIMIT 200")
-                if not df.empty:
-                    data_snippet = df.head(25).to_markdown(index=False)
+                df = run_sql(sql)
+                st.markdown("### Data")
+                st.dataframe(df)
+
+                # Execute chart code inside a safe namespace
+                local_env = {"px": px, "df": df}
+                exec(code, {}, local_env)
+                fig = local_env["fig"]
+
+                st.markdown("### Chart")
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("### Explanation")
+                st.write(explanation)
+
             except Exception as e:
-                data_snippet = f"(Error reading data: {e})"
+                st.error(f"Error running chart SQL or code: {e}")
+
+        # Add chat history
+        st.session_state.chat_history.append(("You", user_q))
+        st.session_state.chat_history.append(("Assistant", "Generated a chart based on your request."))
+        return
+
 
         # SPS policy snippet
         sps_df = get_sps_context(topic)
