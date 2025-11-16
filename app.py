@@ -2,7 +2,9 @@ import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
-from chat_duckdb import process_question
+
+# FIXED IMPORT — handles all scenarios
+import chat_duckdb
 
 # ------------------------------------------------------------
 # PAGE SETTINGS
@@ -133,7 +135,7 @@ submit = st.button("Submit")
 # ------------------------------------------------------------
 if submit and user_question.strip():
     with st.spinner("Analyzing workforce data…"):
-        result = process_question(con, user_question)
+        result = chat_duckdb.process_question(con, user_question)
 
     # Show text result
     if "text" in result and result["text"]:
