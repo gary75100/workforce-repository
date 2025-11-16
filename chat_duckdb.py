@@ -40,7 +40,7 @@ def llm_generate_sql(question: str, tables: list[str]) -> str:
         ]
     )
 
-    return response.choices[0].message["content"].strip()
+    return response.choices[0].message.content.strip()
 
 
 ############################################################
@@ -82,7 +82,7 @@ def generate_executive_narrative(question: str, con):
         ]
     )
 
-    return response.choices[0].message["content"]
+    return response.choices[0].message.content
 
 
 ############################################################
