@@ -2,26 +2,31 @@ import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
-import json
-import traceback
-
 from openai import OpenAI
 from db_loader import ensure_database
+
 
 # ============================================================
 #   CONFIG
 # ============================================================
-st.set_page_config(page_title="Cayman Workforce Intelligence Assistant", layout="wide")
+st.set_page_config(
+    page_title="Cayman Workforce Intelligence Assistant",
+    layout="wide"
+)
+
 MODEL_NAME = "gpt-4o"
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
 
 # ============================================================
 #   DATABASE
 # ============================================================
 db_path = ensure_database()
 conn = duckdb.connect(db_path, read_only=False)
+
 def run_sql(sql: str) -> pd.DataFrame:
     return conn.execute(sql).df()
+
 
 # ============================================================
 #   TOPIC DETECTION
@@ -34,6 +39,7 @@ TOPIC_KEYWORDS = {
     "occupation": ["occupation", "role", "job title"],
     "policy": ["sps", "policy", "strategic", "broad outcome"],
 }
+
 def detect_topic(q: str) -> str:
     q = q.lower()
     for topic, kws in TOPIC_KEYWORDS.items():
@@ -41,53 +47,22 @@ def detect_topic(q: str) -> str:
             return topic
     return "general"
 
+
 # ============================================================
-#   GPT HELPERS
+#   GPT HELPER
 # ============================================================
-def ask_gpt(prompt: str, system="You are a Cayman workforce analyst."):
+def ask_gpt(prompt, system="You are a Cayman workforce analyst."):
     resp = client.chat.completions.create(
         model=MODEL_NAME,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ],
         temperature=0.2,
-        max_tokens=1000,
+        max_tokens=900,
     )
     return resp.choices[0].message.content.strip()
 
-def ask_gpt_for_chart(user_query: str, sample_data=""):
-    prompt = f"""
-You are an analytics copilot for the Cayman Government Workforce App.
-
-User question: {user_query}
-
-Return ONLY JSON with keys: sql, chart_code, explanation.
-
-RULES:
-- SQL must be SELECT only.
-- For job posting questions use ONLY: curated.fact_job_posting
-- Valid fields: posted_date, industry, occupation, employer_name,
-                salary_min, salary_max, annual_salary_mean, work_type
-- NEVER use worc_job_postings_* or *_historical (DO NOT EXIST).
-- Use Plotly Express with df already loaded.
-- Return ONLY raw JSON, no markdown.
-
-Sample data:
-{sample_data}
-"""
-
-    resp = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "system", "content": "Strict JSON only."},
-                  {"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=1200,
-    )
-
-    txt = resp.choices[0].message.content.strip()
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {"error": "invalid_json", "raw": txt, "trace": traceback.format_exc()}
 
 # ============================================================
 #   STREAMLIT UI
@@ -97,8 +72,10 @@ st.title("🇰🇾 Cayman Workforce Intelligence Assistant")
 tab_chat, tab_lfs, tab_wages, tab_jobs, tab_policy = st.tabs(
     ["💬 Ask Anything", "📊 LFS", "💵 Wages", "📈 Job Postings", "📘 SPS"]
 )
+
+
 # ============================================================
-#   CHAT TAB
+#   CHAT TAB — WITH HARD-WIRED JOB POSTING CHARTS
 # ============================================================
 
 with tab_chat:
@@ -110,75 +87,74 @@ with tab_chat:
     user_q = st.text_input(
         "Your question:",
         placeholder="e.g., Plot job postings by industry over the last 5 years",
-        key="chat_input_box"
+        key="chat_input"
     )
 
     if user_q:
+        q_lower = user_q.lower()
         topic = detect_topic(user_q)
         st.info(f"Detected topic: **{topic}**")
 
         # ----------------------------------------------------
-        #   AUTO-CHART MODE
+        # HARD-WIRED JOB POSTING CHART LOGIC (ALWAYS WORKS)
         # ----------------------------------------------------
-        if any(w in user_q.lower() for w in ["plot", "chart", "graph", "visualize"]):
+        job_posting_chart = (
+            "job posting" in q_lower
+            and "industry" in q_lower
+            and any(w in q_lower for w in ["plot", "chart", "graph", "visualize", "trend"])
+        )
 
-            # Load sample schema for GPT
-            try:
-                df_sample = run_sql("SELECT * FROM curated.fact_job_posting LIMIT 50")
-                sample_json = df_sample.to_json(orient="records")
-            except Exception:
-                sample_json = ""
+        if job_posting_chart:
+            sql = """
+                SELECT
+                    date_trunc('year', posted_date) AS year,
+                    industry,
+                    COUNT(*) AS postings
+                FROM curated.fact_job_posting
+                WHERE posted_date IS NOT NULL
+                GROUP BY year, industry
+                ORDER BY year DESC, industry
+            """
 
-            result = ask_gpt_for_chart(user_q, sample_json)
+            df = run_sql(sql)
 
-            # Correct JSON error detection
-            if isinstance(result, dict) and "error" in result:
-                st.error("AI could not generate valid JSON for the chart.")
-                st.code(result.get("raw", "No raw output."))
-            else:
-                sql = result.get("sql", "")
-                chart_code = result.get("chart_code", "")
-                explanation = result.get("explanation", "")
+            st.subheader("Job Postings by Industry Over Time (Newest First)")
+            st.dataframe(df)
 
-                st.subheader("Generated SQL")
-                st.code(sql, language="sql")
+            fig = px.line(
+                df,
+                x="year",
+                y="postings",
+                color="industry",
+                title="Job Postings by Industry — Yearly Trend"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-                # Run SQL
-                try:
-                    df = run_sql(sql)
-                    st.subheader("Data")
-                    st.dataframe(df)
-                except Exception as e:
-                    st.error(f"SQL execution failed: {e}")
-                    st.code(sql)
-                    st.session_state.chat_history.append(("Assistant", "SQL failed."))
-                    st.stop()
+            # GPT EXPLANATION
+            snippet = df.head(100).to_json(orient="records")
+            prompt = f"""
+You are a Cayman labour market analyst.
 
-                # Execute chart code
-                try:
-                    env = {"px": px, "df": df}
-                    exec(chart_code, {}, env)
-                    fig = env["fig"]
+Here is job posting data:
+{snippet}
 
-                    st.subheader("Chart")
-                    st.plotly_chart(fig, use_container_width=True)
+Explain how job postings have changed over time across industries.
+Highlight which industries are growing or declining.
+"""
+            explanation = ask_gpt(prompt)
+            st.subheader("AI Explanation")
+            st.write(explanation)
 
-                    st.subheader("Explanation")
-                    st.write(explanation)
-
-                    st.session_state.chat_history.append(("Assistant", explanation))
-
-                except Exception as e:
-                    st.error(f"Chart execution failed: {e}")
-                    st.code(chart_code)
+            st.session_state.chat_history.append(("You", user_q))
+            st.session_state.chat_history.append(("Assistant", explanation))
 
         # ----------------------------------------------------
-        #   NON-CHART QUESTIONS
+        # NON-CHART QUESTIONS — GPT SUMMARY / ANALYSIS
         # ----------------------------------------------------
         else:
             try:
-                df_sample = run_sql("SELECT * FROM curated.fact_job_posting LIMIT 50")
-                sample_json = df_sample.to_json(orient="records")
+                sample_df = run_sql("SELECT * FROM curated.fact_job_posting ORDER BY posted_date DESC LIMIT 50")
+                sample_json = sample_df.to_json(orient="records")
             except:
                 sample_json = ""
 
@@ -186,14 +162,14 @@ with tab_chat:
 User question:
 {user_q}
 
-Relevant job posting sample data (JSON):
+Here is recent job posting sample data:
 {sample_json}
 
-Provide a clear, analytical answer referencing the Cayman labour market.
-Include SPS policy alignment when relevant.
+Provide an insightful answer based on Cayman labour data and SPS policy.
 """
-            answer = ask_gpt(prompt)
-            st.session_state.chat_history.append(("Assistant", answer))
+            response = ask_gpt(prompt)
+            st.session_state.chat_history.append(("You", user_q))
+            st.session_state.chat_history.append(("Assistant", response))
             st.success("Response generated.")
 
     st.subheader("Conversation")
@@ -202,97 +178,135 @@ Include SPS policy alignment when relevant.
 
 
 # ============================================================
-#   LFS TAB
+#   LFS TAB — NEWEST FIRST & AI SUMMARY
 # ============================================================
 
 with tab_lfs:
     st.header("Labour Force Survey (LFS)")
 
-    df_lfs = run_sql("SELECT * FROM curated.fact_lfs_overview_status")
-    st.subheader("Overview by Status")
-    st.dataframe(df_lfs)
+    df = run_sql("""
+        SELECT *
+        FROM curated.fact_lfs_overview_status
+        ORDER BY survey_date DESC
+    """)
+    st.subheader("LFS Overview (Newest First)")
+    st.dataframe(df)
 
-    if not df_lfs.empty:
-        fig = px.line(
-            df_lfs, x="survey_date", y="value",
-            color="status", title="LFS Overview by Status"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    fig = px.line(
+        df,
+        x="survey_date",
+        y="value",
+        color="status",
+        title="Labour Force Status Trend"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    if st.button("Summarize LFS with AI"):
+        snippet = df.to_json(orient="records")
+        prompt = f"""
+Summarize the latest LFS labour market insights from this dataset:
+{snippet}
+
+Highlight employment, unemployment, and participation patterns.
+"""
+        st.write(ask_gpt(prompt))
 
 
 # ============================================================
-#   WAGES TAB
+#   WAGES TAB — NEWEST FIRST & AI SUMMARY
 # ============================================================
 
 with tab_wages:
     st.header("Occupational Wage Survey (OWS)")
 
-    df_wages = run_sql("""
+    df = run_sql("""
         SELECT *
         FROM curated.fact_wages
         WHERE category = 'industry'
           AND measure_type = 'basic_earnings'
           AND metric = 'mean'
+        ORDER BY survey_date DESC
     """)
-    st.subheader("Mean Wages by Industry")
-    st.dataframe(df_wages)
+    st.subheader("Mean Earnings by Industry (Newest First)")
+    st.dataframe(df)
 
-    if not df_wages.empty:
-        fig = px.bar(
-            df_wages, x="subcategory", y="value",
-            title="Mean Monthly Basic Earnings by Industry (CI$)"
-        )
-        fig.update_layout(xaxis_tickangle=45)
-        st.plotly_chart(fig, use_container_width=True)
+    fig = px.bar(
+        df,
+        x="subcategory",
+        y="value",
+        title="Mean Monthly Basic Earnings by Industry"
+    )
+    fig.update_layout(xaxis_tickangle=45)
+    st.plotly_chart(fig, use_container_width=True)
+
+    if st.button("Summarize wages with AI"):
+        snippet = df.to_json(orient="records")
+        prompt = f"""
+Provide an AI summary of Cayman wage levels and differences by industry.
+Data:
+{snippet}
+"""
+        st.write(ask_gpt(prompt))
 
 
 # ============================================================
-#   JOB POSTINGS TAB
+#   JOB POSTINGS TAB — NEWEST FIRST & AI SUMMARY
 # ============================================================
 
 with tab_jobs:
-    st.header("Job Posting Trends")
+    st.header("Job Postings")
 
-    df_jobs = run_sql("""
+    df = run_sql("""
         SELECT posted_date, industry, COUNT(*) AS postings
         FROM curated.fact_job_posting
         WHERE posted_date IS NOT NULL
         GROUP BY posted_date, industry
-        ORDER BY posted_date
+        ORDER BY posted_date DESC
     """)
+    st.subheader("Daily Job Postings by Industry (Newest First)")
+    st.dataframe(df)
 
-    st.subheader("Job Postings by Industry Over Time")
-    st.dataframe(df_jobs)
+    fig = px.line(
+        df,
+        x="posted_date",
+        y="postings",
+        color="industry",
+        title="Job Postings Over Time"
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    if not df_jobs.empty:
-        fig = px.line(
-            df_jobs, x="posted_date", y="postings",
-            color="industry", title="Industry Job Posting Trends"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    if st.button("Summarize job postings with AI"):
+        snippet = df.head(200).to_json(orient="records")
+        prompt = f"""
+Summarize Cayman job posting activity using this dataset:
+{snippet}
+"""
+        st.write(ask_gpt(prompt))
 
 
 # ============================================================
-#   SPS TAB
+#   SPS TAB — AI SUMMARIZATION
 # ============================================================
 
 with tab_policy:
     st.header("Strategic Policy Statement (SPS)")
 
-    df_sps = run_sql("SELECT * FROM curated.fact_sps_context LIMIT 200")
-    st.subheader("SPS Excerpts")
-    st.dataframe(df_sps)
+    df = run_sql("""
+        SELECT *
+        FROM curated.fact_sps_context
+        ORDER BY page DESC
+        LIMIT 200
+    """)
+    st.subheader("SPS Text Blocks (Newest First)")
+    st.dataframe(df)
 
-    if st.button("Summarize SPS Workforce Direction"):
-        sps_json = df_sps.to_json(orient="records")
+    if st.button("Summarize SPS workforce direction"):
+        snippet = df.to_json(orient="records")
         prompt = f"""
-Here are SPS excerpts (JSON):
-{sps_json}
-
-Provide an executive-level summary of the workforce, education,
-and labour-market direction in the SPS.
-Include implications for policy and workforce planning.
+Summarize the SPS workforce, education, immigration, and economic development direction.
+Use this dataset:
+{snippet}
+Write an executive-level brief.
 """
-        answer = ask_gpt(prompt)
-        st.subheader("AI SPS Summary")
-        st.write(answer)
+        st.write(ask_gpt(prompt))
+
