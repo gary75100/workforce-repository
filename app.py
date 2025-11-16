@@ -12,24 +12,36 @@ from chat_duckdb import route
 
 def load_database():
     """
-    Loads the DuckDB database from a local file or remote download.
-    This version assumes DB_PATH is pulled from Streamlit secrets.
+    Loads the DuckDB database from AWS S3 or local.
+    Uses a custom User-Agent because S3 blocks default urllib requests.
     """
     DB_PATH = st.secrets["DB_URL"]
 
-    # Download to temporary file if needed
     try:
+        # Remote S3 URL
         if DB_PATH.startswith("http"):
-            import tempfile, urllib.request
+            import tempfile
+            import urllib.request
+
             temp = tempfile.NamedTemporaryFile(delete=False)
-            urllib.request.urlretrieve(DB_PATH, temp.name)
+
+            # Custom User-Agent to avoid AWS 403 errors
+            req = urllib.request.Request(
+                DB_PATH,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req) as response, open(temp.name, "wb") as out_file:
+                out_file.write(response.read())
+
             return duckdb.connect(temp.name)
+
+        # Local file fallback
         else:
             return duckdb.connect(DB_PATH)
+
     except Exception as e:
         st.error(f"Error loading database: {e}")
         raise e
-
 
 ############################################################
 #                    SIDEBAR COMPONENTS
