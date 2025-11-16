@@ -12,32 +12,32 @@ from chat_duckdb import route
 
 def load_database():
     """
-    Loads the DuckDB database from AWS S3 or local.
-    Uses a custom User-Agent because S3 blocks default urllib requests.
+    Downloads the DuckDB file from AWS S3 into a temporary file,
+    then opens it using duckdb.connect.
+    This method works reliably for all S3 regions.
     """
-    DB_PATH = st.secrets["DB_URL"]
+    DB_URL = st.secrets["DB_URL"]
 
     try:
-        # Remote S3 URL
-        if DB_PATH.startswith("http"):
-            import tempfile
-            import urllib.request
+        import tempfile
+        import urllib.request
 
-            temp = tempfile.NamedTemporaryFile(delete=False)
+        # Create temp file
+        tmp = tempfile.NamedTemporaryFile(delete=False)
 
-            # Custom User-Agent to avoid AWS 403 errors
-            req = urllib.request.Request(
-                DB_PATH,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req) as response, open(temp.name, "wb") as out_file:
-                out_file.write(response.read())
+        # S3 requires a real User-Agent or it may return 403
+        req = urllib.request.Request(
+            DB_URL,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
 
-            return duckdb.connect(temp.name)
+        # Download the file
+        with urllib.request.urlopen(req) as response:
+            tmp.write(response.read())
+            tmp.flush()
 
-        # Local file fallback
-        else:
-            return duckdb.connect(DB_PATH)
+        # Connect to DuckDB
+        return duckdb.connect(tmp.name)
 
     except Exception as e:
         st.error(f"Error loading database: {e}")
