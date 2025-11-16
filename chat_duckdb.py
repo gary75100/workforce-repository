@@ -49,17 +49,39 @@ def clean_sql(raw_sql: str) -> str:
 
 def llm_generate_sql(con: duckdb.DuckDBPyConnection, question: str, purpose: str = "generic") -> str:
     """
-    Ask the LLM to generate SQL, given the current database tables and a question.
-    'purpose' can be 'chart', 'table', or 'generic' to bias the query.
+    Generate SQL for DuckDB using the LLM **with schema awareness**.
+    The model is given the table names AND column names so it stops hallucinating.
     """
-    tables = list_tables(con)
-    table_list = ", ".join(tables) if tables else "(no tables found)"
 
-    instructions = "Return only SQL. Do not include markdown fences, comments, or explanations."
+    tables = list_tables(con)
+
+    # Build schema dictionary
+    schema_info = []
+    for t in tables:
+        try:
+            cols = con.execute(f"PRAGMA table_info('{t}')").fetchdf()
+            col_list = ", ".join([col for col in cols["name"]])
+            schema_info.append(f"- {t}: {col_list}")
+        except:
+            pass
+
+    schema_text = "\n".join(schema_info) if schema_info else "(no schema available)"
+
+    instructions = (
+        "Return ONLY SQL. No markdown. No fences.\n"
+        "Use EXACT column names shown in the schema.\n"
+        "If a date column exists, detect it from the schema.\n"
+        "Do NOT invent column names.\n"
+        "Do NOT guess — use ONLY columns given below.\n"
+    )
+
     if purpose == "chart":
-        instructions += " The SQL should return at least two columns suitable for plotting, such as time and a numeric value."
+        instructions += (
+            "SQL MUST return a date/time column and a numeric column.\n"
+            "If multiple date columns exist, prefer 'Posting Date' or 'Start Date'.\n"
+        )
     elif purpose == "table":
-        instructions += " The SQL should return a table with relevant columns."
+        instructions += "SQL MUST return a useful table.\n"
 
     prompt = f"""
 You are a DuckDB SQL generator.
@@ -67,8 +89,8 @@ You are a DuckDB SQL generator.
 User question:
 \"\"\"{question}\"\"\"
 
-Available tables:
-{table_list}
+Available tables and columns:
+{schema_text}
 
 {instructions}
     """
@@ -77,13 +99,14 @@ Available tables:
         model="gpt-4o",
         temperature=0,
         messages=[
-            {"role": "system", "content": "You output only valid DuckDB SQL queries."},
+            {"role": "system", "content": "Output only valid SQL for DuckDB."},
             {"role": "user", "content": prompt}
         ],
     )
 
     raw_sql = resp.choices[0].message.content
     return clean_sql(raw_sql)
+
 
 
 # ============================================================
