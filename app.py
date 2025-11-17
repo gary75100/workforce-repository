@@ -368,8 +368,8 @@ if len(filtered_df) > 0:
 
     # Trend chart
     st.subheader("Posting Trend")
-    filtered["month"] = pd.to_datetime(filtered["posted_date"]).dt.to_period("M").dt.to_timestamp()
-    trend = filtered.groupby(["month", "industry"]).size().reset_index(name="postings")
+    filtered_df["month"] = pd.to_datetime(filtered_df["posted_date"]).dt.to_period("M").dt.to_timestamp()
+    trend = filtered_df.groupby(["month", "industry"]).size().reset_index(name="postings")
 
     st.plotly_chart(
         px.line(trend, x="month", y="postings", color="industry", markers=True),
@@ -378,12 +378,12 @@ if len(filtered_df) > 0:
 
     # Metrics
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total", len(filtered))
-    col2.metric("Tech Roles", int(filtered["is_tech_role"].sum()))
-    col3.metric("Entry-Level", int(filtered["is_entry_level"].sum()))
+    col1.metric("Total", len(filtered_df))
+    col2.metric("Tech Roles", int(filtered_df["is_tech_role"].sum()))
+    col3.metric("Entry-Level", int(filtered_df["is_entry_level"].sum()))
 
     if st.button("Summarize Job Postings with AI"):
-        snippet = filtered.head(50).to_markdown(index=False)
+        snippet = filtered_df.head(50).to_markdown(index=False)
         st.write(
             ask_gpt(f"Summarize Cayman job posting activity:\n{snippet}")
         )
