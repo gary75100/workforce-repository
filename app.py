@@ -338,7 +338,7 @@ with tab_jobs:
 
     filtered_df = df.copy()
     if selected_industry != "All":
-        filtered_df = filtered_df[filtered["industry"] == selected_industry]
+        filtered_df = filtered_df[filtered_df["industry"] == selected_industry]
 
     st.subheader("Daily Job Postings (Newest First)")
     
