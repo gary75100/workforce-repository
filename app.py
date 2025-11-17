@@ -383,7 +383,7 @@ if len(filtered_df) > 0:
     col3.metric("Entry-Level", int(filtered_df["is_entry_level"].sum()))
 
     if st.button("Summarize Job Postings with AI"):
-        snippet = filtered_df.head(50).to_markdown(index=False)
+        snippet = filtered_df.head(50).to_json(orient="records")
         st.write(
             ask_gpt(f"Summarize Cayman job posting activity:\n{snippet}")
         )
