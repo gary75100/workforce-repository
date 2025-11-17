@@ -4,10 +4,24 @@ import pandas as pd
 import plotly.express as px
 from openai import OpenAI
 from db_loader import ensure_database
+# ---------------------------------------------
+# FIXED GPT CALL FUNCTION (place here!)
+# ---------------------------------------------
+MODEL_NAME = "gpt-4o"
 
-# ============================================================
-#   CONFIG
-# ============================================================
+def ask_gpt(prompt):
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": "You are a Cayman labour market AI analyst."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.1,
+        max_tokens=700
+    )
+    return resp.choices[0].message["content"].strip()
+
 st.set_page_config(
     page_title="Cayman Workforce Intelligence Assistant",
     layout="wide"
