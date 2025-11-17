@@ -204,7 +204,7 @@ if st.button("Summarize This Dataset"):
         # ----------------------------------------------------
         # NON-CHART QUESTIONS — GPT SUMMARY / ANALYSIS
         # ----------------------------------------------------
-        else:
+    else:
             try:
                 sample_df = run_sql("SELECT * FROM curated.fact_job_posting ORDER BY posted_date DESC LIMIT 50")
                 sample_json = sample_df.to_json(orient="records")
