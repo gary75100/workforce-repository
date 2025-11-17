@@ -392,10 +392,10 @@ st.plotly_chart(
 )
 
 # Metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total", len(filtered_df))
-    col2.metric("Tech Roles", int(filtered_df["is_tech_role"].sum()))
-    col3.metric("Entry-Level", int(filtered_df["is_entry_level"].sum()))
+col1, col2, col3 = st.columns(3)
+col1.metric("Total", len(filtered_df))
+col2.metric("Tech Roles", int(filtered_df["is_tech_role"].sum()))
+col3.metric("Entry-Level", int(filtered_df["is_entry_level"].sum()))
 
     if st.button("Summarize Job Postings with AI"):
         snippet = filtered_df.head(50).to_json(orient="records")
