@@ -391,8 +391,7 @@ st.plotly_chart(
     use_container_width=True
 )
 
-
-    # Metrics
+# Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Total", len(filtered_df))
     col2.metric("Tech Roles", int(filtered_df["is_tech_role"].sum()))
