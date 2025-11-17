@@ -95,58 +95,111 @@ with tab_chat:
         topic = detect_topic(user_q)
         st.info(f"Detected topic: **{topic}**")
 
-        # ----------------------------------------------------
-        # HARD-WIRED JOB POSTING CHART LOGIC (ALWAYS WORKS)
-        # ----------------------------------------------------
-        job_posting_chart = (
-            "job posting" in q_lower
-            and "industry" in q_lower
-            and any(w in q_lower for w in ["plot", "chart", "graph", "visualize", "trend"])
-        )
+# ---------------------------------------------------------
+# JOB POSTINGS SECTION — CLEAN UX + NEW DATA
+# ---------------------------------------------------------
+st.header("Job Postings")
 
-        if job_posting_chart:
-            sql = """
-                SELECT
-                    date_trunc('year', posted_date) AS year,
-                    industry,
-                    COUNT(*) AS postings
-                FROM curated.fact_job_posting
-                WHERE posted_date IS NOT NULL
-                GROUP BY year, industry
-                ORDER BY year DESC, industry
-            """
+# Load the full fact table
+df = run_sql("""
+    SELECT 
+        posted_date,
+        industry,
+        employer_name,
+        job_title,
+        salary_min,
+        salary_max,
+        is_tech_role,
+        is_entry_level
+    FROM curated.fact_job_posting
+    ORDER BY posted_date DESC
+""")
 
-            df = run_sql(sql)
+# --- FILTER BAR ---------------------------------------------------
+with st.expander("Filters", expanded=True):
+    col1, col2, col3 = st.columns(3)
 
-            st.subheader("Job Postings by Industry Over Time (Newest First)")
-            st.dataframe(df)
+    industries = df['industry'].dropna().unique()
+    employers = df['employer_name'].dropna().unique()
 
-            fig = px.line(
-                df,
-                x="year",
-                y="postings",
-                color="industry",
-                title="Job Postings by Industry — Yearly Trend"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+    selected_industry = col1.selectbox(
+        "Industry", 
+        options=["All"] + sorted(industries.tolist())
+    )
 
-            # GPT EXPLANATION
-            snippet = df.head(100).to_json(orient="records")
-            prompt = f"""
-You are a Cayman labour market analyst.
+    selected_employer = col2.selectbox(
+        "Employer", 
+        options=["All"] + sorted(employers.tolist())
+    )
 
-Here is job posting data:
-{snippet}
+    date_range = col3.date_input(
+        "Date Range",
+        value=[df['posted_date'].min(), df['posted_date'].max()]
+    )
 
-Explain how job postings have changed over time across industries.
-Highlight which industries are growing or declining.
-"""
-            explanation = ask_gpt(prompt)
-            st.subheader("AI Explanation")
-            st.write(explanation)
+# --- APPLY FILTERS ------------------------------------------------
+mask = (
+    (df['posted_date'] >= pd.to_datetime(date_range[0])) &
+    (df['posted_date'] <= pd.to_datetime(date_range[1]))
+)
 
-            st.session_state.chat_history.append(("You", user_q))
-            st.session_state.chat_history.append(("Assistant", explanation))
+if selected_industry != "All":
+    mask &= (df['industry'] == selected_industry)
+
+if selected_employer != "All":
+    mask &= (df['employer_name'] == selected_employer)
+
+filtered_df = df[mask]
+
+st.subheader("Daily Job Postings (Newest First)")
+st.dataframe(filtered_df, use_container_width=True, height=500)
+
+# --- CHART --------------------------------------------------------
+st.subheader("Job Posting Trend")
+
+chart_df = filtered_df.groupby(
+    [pd.to_datetime(filtered_df['posted_date']).dt.to_period('M'), 'industry']
+).size().reset_index(name='postings')
+
+chart_df['posted_date'] = chart_df['posted_date'].dt.to_timestamp()
+
+fig = px.line(
+    chart_df,
+    x="posted_date",
+    y="postings",
+    color="industry",
+    title="Job Postings by Industry Over Time",
+    markers=True
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# --- QUICK METRICS -----------------------------------------------
+st.subheader("Quick Insights")
+
+colA, colB, colC = st.columns(3)
+colA.metric("Total Postings", len(filtered_df))
+colB.metric("Tech Roles", filtered_df['is_tech_role'].sum())
+colC.metric("Entry Level Roles", filtered_df['is_entry_level'].sum())
+
+# --- AI SUMMARY ---------------------------------------------------
+st.subheader("Explain with AI")
+
+if st.button("Summarize This Dataset"):
+    sample = filtered_df.head(50).to_markdown(index=False)
+    prompt = f"""
+    Provide a clear executive summary of these Cayman job postings:
+
+    {sample}
+
+    Focus on:
+    - high-demand industries
+    - employer activity
+    - tech vs non-tech trends
+    - salary insights
+    - entry-level opportunities
+    """
+    answer = ask_gpt(prompt)
+    st.write(answer)
 
         # ----------------------------------------------------
         # NON-CHART QUESTIONS — GPT SUMMARY / ANALYSIS
