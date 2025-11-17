@@ -369,15 +369,28 @@ if len(filtered_df) > 0:
     st.metric("Avg Maximum Salary", fmt(avg_max))
 
 
-    # Trend chart
-    st.subheader("Posting Trend")
-    filtered_df["month"] = pd.to_datetime(filtered_df["posted_date"]).dt.to_period("M").dt.to_timestamp()
-    trend = filtered_df.groupby(["month", "industry"]).size().reset_index(name="postings")
+# Trend chart
+st.subheader("Posting Trend")
 
-    st.plotly_chart(
-        px.line(trend, x="month", y="postings", color="industry", markers=True),
-        use_container_width=True
-    )
+# Create month column safely
+filtered_df["month"] = pd.to_datetime(filtered_df["posted_date"]).dt.to_period("M").dt.to_timestamp()
+
+# Group by month + industry
+trend = filtered_df.groupby(["month", "industry"]).size().reset_index(name="postings")
+
+# Plot
+st.plotly_chart(
+    px.line(
+        trend,
+        x="month",
+        y="postings",
+        color="industry",
+        markers=True,
+        title="Job Posting Trend by Industry"
+    ),
+    use_container_width=True
+)
+
 
     # Metrics
     col1, col2, col3 = st.columns(3)
