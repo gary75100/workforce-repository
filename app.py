@@ -49,6 +49,26 @@ tab_chat, tab_lfs, tab_wages, tab_jobs, tab_policy = st.tabs(
     ["💬 Ask Anything", "📊 LFS", "💵 Wages", "📈 Job Postings", "📘 SPS"]
 )
 # ============================================================
+# GLOBAL CURRENCY SELECTOR
+# ============================================================
+currency = st.selectbox("Currency:", ["CI$", "US$"], index=0)
+
+def convert(value):
+    if currency == "CI$":
+        return value
+    elif currency == "US$":
+        return value * 1.20   # Standard Cayman-to-US conversion unless you give me another rate
+    return value
+
+def fmt(value):
+    if value is None or pd.isna(value):
+        return ""
+    if currency == "CI$":
+        return f"CI${value:,.2f}"
+    else:
+        return f"US${convert(value):,.2f}"
+
+# ============================================================
 #   TAB 1 — ASK ANYTHING (7 GUARANTEED ANSWERS + FREEFORM GPT)
 # ============================================================
 with tab_chat:
@@ -260,24 +280,36 @@ with tab_wages:
     """)
 
     st.subheader("Wage Records (Newest First)")
-    st.dataframe(df, use_container_width=True)
+    df["value_fmt"] = df["value"].apply(fmt)
+    st.dataframe(df[["subcategory", "value_fmt"]])
 
     # Chart: mean earnings by industry if available
     if "subcategory" in df.columns and "value" in df.columns:
         fig = px.bar(
             df,
             x="subcategory",
-            y="value",
+            y=df["value"].apply(convert),
             color="category",
             title="Wage Levels by Industry / Category"
         )
         fig.update_layout(xaxis_tickangle=45)
         st.plotly_chart(fig, use_container_width=True)
 
+    # --- AI SUMMARY ---------------------------------------------------
     if st.button("Summarize Wages with AI"):
         snippet = df.head(50).to_markdown(index=False)
-        st.write(ask_gpt(f"Provide a clear summary of Cayman wage levels:\n{snippet}"))
+        prompt = f"""
+Provide a clear executive summary of Cayman wage levels based on this dataset:
 
+{snippet}
+
+Explain:
+- which industries pay the most and least
+- year-over-year changes
+- tech vs non-tech earnings gaps (if visible)
+- any anomalies or notable patterns
+"""
+        st.write(ask_gpt(prompt))
 
 # ============================================================
 #   TAB 4 — JOB POSTINGS EXPLORER
@@ -308,8 +340,31 @@ with tab_jobs:
     if selected_industry != "All":
         filtered = filtered[filtered["industry"] == selected_industry]
 
-    st.subheader("Job Postings (Newest First)")
-    st.dataframe(filtered, use_container_width=True, height=500)
+    st.subheader("Daily Job Postings (Newest First)")
+    
+    # Apply formatting ONLY to salary columns
+    show_df = filtered_df.copy()
+    show_df["salary_min"] = show_df["salary_min"].apply(fmt)
+    show_df["salary_max"] = show_df["salary_max"].apply(fmt)
+    
+    st.dataframe(show_df, use_container_width=True, height=500)
+# --- QUICK INSIGHTS -----------------------------------------------
+st.subheader("Quick Insights")
+
+colA, colB, colC = st.columns(3)
+
+colA.metric("Total Postings", len(filtered_df))
+colB.metric("Tech Roles", filtered_df['is_tech_role'].sum())
+colC.metric("Entry Level Roles", filtered_df['is_entry_level'].sum())
+
+# Salary insights (converted)
+if len(filtered_df) > 0:
+    avg_min = filtered_df["salary_min"].mean()
+    avg_max = filtered_df["salary_max"].mean()
+
+    st.metric("Avg Minimum Salary", fmt(avg_min))
+    st.metric("Avg Maximum Salary", fmt(avg_max))
+
 
     # Trend chart
     st.subheader("Posting Trend")
