@@ -225,9 +225,9 @@ Provide an insightful answer based on Cayman labour data and SPS policy.
             st.session_state.chat_history.append(("Assistant", response))
             st.success("Response generated.")
 
-    st.subheader("Conversation")
-    for role, msg in st.session_state.chat_history:
-        st.markdown(f"**{role}:** {msg}")
+            st.subheader("Conversation")
+            for role, msg in st.session_state.chat_history:
+                st.markdown(f"**{role}:** {msg}")
 
 
 # ============================================================
