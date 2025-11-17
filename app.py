@@ -348,14 +348,17 @@ with tab_jobs:
     show_df["salary_max"] = show_df["salary_max"].apply(fmt)
     
     st.dataframe(show_df, use_container_width=True, height=500)
-# --- QUICK INSIGHTS -----------------------------------------------
+# --- QUICK INSIGHTS ---------------------------------------------
 st.subheader("Quick Insights")
 
-colA, colB, colC = st.columns(3)
+# Last 6 months filter
+six_months_ago = pd.to_datetime("today") - pd.Timedelta(days=180)
+last_6_months_df = filtered_df[filtered_df["posted_date"] >= six_months_ago]
 
-colA.metric("Total Postings", len(filtered_df))
-colB.metric("Tech Roles", filtered_df['is_tech_role'].sum())
-colC.metric("Entry Level Roles", filtered_df['is_entry_level'].sum())
+colA, colB, colC = st.columns(3)
+colA.metric("Total Postings (Last 6 Months)", len(last_6_months_df))
+colB.metric("Tech Roles (Last 6 Months)", last_6_months_df['is_tech_role'].sum())
+colC.metric("Entry Level Roles (Last 6 Months)", last_6_months_df['is_entry_level'].sum())
 
 # Salary insights (converted)
 if len(filtered_df) > 0:
