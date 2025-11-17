@@ -83,8 +83,9 @@ def fmt(value):
         return f"US${convert(value):,.2f}"
 
 # ============================================================
-#   TAB 1 — ASK ANYTHING (7 GUARANTEED ANSWERS + FREEFORM GPT)
+# TAB 1 — ASK ANYTHING (INTENT ROUTER + 7 GUARANTEED ANSWERS)
 # ============================================================
+
 with tab_chat:
 
     st.header("Ask any workforce question")
@@ -93,131 +94,191 @@ with tab_chat:
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
+    # User input
     user_q = st.text_input(
         "Your question:",
         placeholder="e.g., What employer posts the most tech roles?",
         key="chat_input"
     )
 
-    if user_q:
-        q = user_q.lower()
-        
-        # 🔥 FIXED LOWEST TECH SALARY QUESTION
-        if "lowest salary" in q and "tech" in q:
-            sql = """
-            SELECT
-                EXTRACT(year FROM posted_date) AS year,
-                MIN(annual_salary_min) AS lowest_salary
-            FROM curated.fact_job_posting
-            WHERE 
-                is_tech_role = TRUE
-                AND posted_date BETWEEN '2020-01-01' AND '2025-12-31'
-                AND annual_salary_min IS NOT NULL
-                AND annual_salary_min > 1000
-            GROUP BY year
-            ORDER BY year;
+    if not user_q:
+        st.stop()
+
+    # -----------------------------------------------------------
+    # STEP 1 — GPT INTENT CLASSIFIER
+    # -----------------------------------------------------------
+
+    intent_prompt = f"""
+    Classify the user's workforce question into EXACTLY one of these labels.
+    Respond with ONLY the label, nothing else.
+
+    LABELS:
+    - highest_tech_salary_by_year
+    - lowest_tech_salary_by_year
+    - average_tech_salary_by_year
+    - employer_most_tech_roles
+    - employer_least_tech_roles
+    - entry_level_tech_roles
+    - tech_salary_trend
+    - general_question
+
+    USER QUESTION:
+    "{user_q}"
+    """
+
+    intent = ask_gpt(intent_prompt).strip().lower()
+
+    st.info(f"Detected intent: **{intent}**")
+
+    # -----------------------------------------------------------
+    # STEP 2 — INTENT ROUTER → RUN RELEVANT SQL
+    # -----------------------------------------------------------
+
+    # Helper to render results uniformly
+    def show_table_and_chart(df, x=None, y=None, title=None):
+        st.dataframe(df, use_container_width=True)
+        if x and y:
+            fig = px.line(df, x=x, y=y, title=title, markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # -------------------------------
+    # INTENT: employer_most_tech_roles
+    # -------------------------------
+    if intent == "employer_most_tech_roles":
+        sql = """
+        SELECT employer_name, COUNT(*) AS tech_roles
+        FROM curated.fact_job_posting
+        WHERE is_tech_role = TRUE
+        GROUP BY employer_name
+        ORDER BY tech_roles DESC
+        LIMIT 1
         """
         df = run_sql(sql)
-        st.subheader("Lowest Tech Salaries by Year")
-        st.dataframe(df)
-        fig = px.line(df, x="year", y="lowest_salary", markers=True)
-        st.plotly_chart(fig, use_container_width=True)
-        st.stop()
-        # =======================================================
-        # ROUTED ANSWERS (7 guaranteed client questions)
-        # =======================================================
+        show_table_and_chart(df)
+        ai_answer = ask_gpt(f"Explain which employer posts the most tech roles:\n{df.to_json()}")
 
-        # 1. Employer posting the most tech roles
-        if "most" in q and "tech" in q and "employer" in q:
-            df = run_sql("""
-                SELECT employer_name, COUNT(*) AS tech_roles
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE
-                GROUP BY employer_name
-                ORDER BY tech_roles DESC
-                LIMIT 10;
-            """)
-            st.subheader("Employers Posting the Most Tech Roles")
-            st.dataframe(df, use_container_width=True)
+    # -------------------------------
+    # INTENT: employer_least_tech_roles
+    # -------------------------------
+    elif intent == "employer_least_tech_roles":
+        sql = """
+        SELECT employer_name, COUNT(*) AS tech_roles
+        FROM curated.fact_job_posting
+        WHERE is_tech_role = TRUE
+        GROUP BY employer_name
+        HAVING COUNT(*) > 0
+        ORDER BY tech_roles ASC
+        LIMIT 1
+        """
+        df = run_sql(sql)
+        show_table_and_chart(df)
+        ai_answer = ask_gpt(f"Explain which employer posts the fewest tech roles:\n{df.to_json()}")
 
-        # 2. Employer posting the least tech roles
-        elif "least" in q and "tech" in q and "employer" in q:
-            df = run_sql("""
-                SELECT employer_name, COUNT(*) AS tech_roles
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE
-                GROUP BY employer_name
-                ORDER BY tech_roles ASC
-                LIMIT 10;
-            """)
-            st.subheader("Employers Posting the Fewest Tech Roles")
-            st.dataframe(df, use_container_width=True)
+    # -------------------------------
+    # INTENT: entry_level_tech_roles
+    # -------------------------------
+    elif intent == "entry_level_tech_roles":
+        sql = """
+        SELECT job_title, employer_name, required_education, years_experience
+        FROM curated.fact_job_posting
+        WHERE is_entry_level = TRUE
+          AND is_tech_role = TRUE
+        ORDER BY posted_date DESC
+        LIMIT 200
+        """
+        df = run_sql(sql)
+        show_table_and_chart(df)
+        ai_answer = ask_gpt(f"Summarize entry-level tech roles and common requirements:\n{df.to_json()}")
 
-        # 3. Entry-level tech roles + common requirements
-        elif "entry" in q and "tech" in q:
-            st.subheader("Entry-Level Tech Roles")
-            df_count = run_sql("""
-                SELECT COUNT(*) AS entry_level_tech_roles
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE AND is_entry_level = TRUE;
-            """)
-            st.dataframe(df_count)
+    # -------------------------------
+    # INTENT: highest_tech_salary_by_year
+    # -------------------------------
+    elif intent == "highest_tech_salary_by_year":
+        sql = """
+        SELECT
+            EXTRACT(YEAR FROM posted_date) AS year,
+            MAX(salary_max) AS highest_salary
+        FROM curated.fact_job_posting
+        WHERE is_tech_role = TRUE
+        GROUP BY year
+        ORDER BY year
+        """
+        df = run_sql(sql)
+        df["highest_salary"] = df["highest_salary"].apply(fmt)
+        show_table_and_chart(df, x="year", y="highest_salary", title="Highest Tech Salaries by Year")
+        ai_answer = ask_gpt(f"Explain highest tech salaries by year:\n{df.to_json()}")
 
-            st.subheader("Most Common Requirements")
-            df_req = run_sql("""
-                SELECT years_experience, COUNT(*) AS freq
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE AND is_entry_level = TRUE
-                GROUP BY years_experience
-                ORDER BY freq DESC
-                LIMIT 10;
-            """)
-            st.dataframe(df_req)
+    # -------------------------------
+    # INTENT: lowest_tech_salary_by_year
+    # -------------------------------
+    elif intent == "lowest_tech_salary_by_year":
+        sql = """
+        SELECT
+            EXTRACT(YEAR FROM posted_date) AS year,
+            MIN(salary_min) AS lowest_salary
+        FROM curated.fact_job_posting
+        WHERE is_tech_role = TRUE
+        GROUP BY year
+        ORDER BY year
+        """
+        df = run_sql(sql)
+        df["lowest_salary"] = df["lowest_salary"].apply(fmt)
+        show_table_and_chart(df, x="year", y="lowest_salary", title="Lowest Tech Salaries by Year")
+        ai_answer = ask_gpt(f"Explain lowest tech salaries by year:\n{df.to_json()}")
 
-        # 4. Highest tech salary YoY (2020–2025)
-        elif "highest" in q and "salary" in q and "tech" in q:
-            df = run_sql("""
-                SELECT YEAR(posted_date) AS year,
-                       MAX(salary_max) AS highest_salary
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE
-                  AND posted_date >= '2020-01-01'
-                GROUP BY year
-                ORDER BY year;
-            """)
-            st.subheader("Highest Tech Salaries by Year")
-            st.dataframe(df)
-            st.plotly_chart(px.line(df, x="year", y="highest_salary", markers=True))
+    # -------------------------------
+    # INTENT: average_tech_salary_by_year
+    # -------------------------------
+    elif intent == "average_tech_salary_by_year":
+        sql = """
+        SELECT
+            EXTRACT(YEAR FROM posted_date) AS year,
+            AVG((salary_min + salary_max)/2) AS avg_salary
+        FROM curated.fact_job_posting
+        WHERE is_tech_role = TRUE
+        GROUP BY year
+        ORDER BY year
+        """
+        df = run_sql(sql)
+        df["avg_salary"] = df["avg_salary"].apply(fmt)
+        show_table_and_chart(df, x="year", y="avg_salary", title="Average Tech Salary by Year")
+        ai_answer = ask_gpt(f"Explain average tech salaries by year:\n{df.to_json()}")
 
-        # 5. Average tech salary YoY
-        elif "average" in q and "salary" in q and "tech" in q:
-            df = run_sql("""
-                SELECT YEAR(posted_date) AS year,
-                       AVG((salary_min + salary_max)/2) AS avg_salary
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE
-                  AND posted_date >= '2020-01-01'
-                GROUP BY year
-                ORDER BY year;
-            """)
-            st.subheader("Average Tech Salaries by Year")
-            st.dataframe(df)
-            st.plotly_chart(px.line(df, x="year", y="avg_salary", markers=True))
+    # -------------------------------
+    # INTENT: tech_salary_trend
+    # -------------------------------
+    elif intent == "tech_salary_trend":
+        sql = """
+        SELECT
+            posted_date,
+            (salary_min + salary_max)/2 AS salary
+        FROM curated.fact_job_posting
+        WHERE is_tech_role = TRUE
+        ORDER BY posted_date
+        """
+        df = run_sql(sql)
+        df["salary"] = df["salary"].apply(fmt)
+        show_table_and_chart(df, x="posted_date", y="salary", title="Tech Salary Trend Over Time")
+        ai_answer = ask_gpt(f"Explain tech salary trend:\n{df.to_json()}")
 
-        # 6. Lowest tech salary YoY
-        elif "lowest" in q and "salary" in q and "tech" in q:
-            df = run_sql("""
-                SELECT YEAR(posted_date) AS year,
-                       MIN(salary_min) AS lowest_salary
-                FROM curated.fact_job_posting
-                WHERE is_tech_role = TRUE
-                  AND posted_date >= '2020-01-01'
-                GROUP BY year
-                ORDER BY year;
-            """)
-            st.subheader("Lowest Tech Salaries by Year")
-            st.dataframe(df)
-            st.plotly_chart(px.line(df, x="year", y="lowest_salary", markers=True))
+    # -------------------------------
+    # INTENT: general_question → fall back to GPT
+    # -------------------------------
+    else:
+        sample = run_sql("SELECT * FROM curated.fact_job_posting ORDER BY posted_date DESC LIMIT 50")
+        sample_json = sample.to_json(orient="records")
+        ai_answer = ask_gpt(
+            f"User asked: {user_q}\nHere is sample Cayman workforce data:\n{sample_json}\nAnswer the question factually."
+        )
+
+    # -----------------------------------------------------------
+    # STEP 3 — DISPLAY AI ANSWER + STORE IN CHAT HISTORY
+    # -----------------------------------------------------------
+    st.subheader("AI Analysis")
+    st.write(ai_answer)
+
+    st.session_state.chat_history.append(("You", user_q))
+    st.session_state.chat_history.append(("Assistant", ai_answer))
 
         # ======================
         # FALLBACK — FREEFORM AI
