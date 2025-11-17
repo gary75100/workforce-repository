@@ -103,19 +103,19 @@ with tab_chat:
         q = user_q.lower()
         
         # 🔥 FIXED LOWEST TECH SALARY QUESTION
-    if "lowest salary" in q and "tech" in q:
-        sql = """
-        SELECT
-            EXTRACT(year FROM posted_date) AS year,
-            MIN(annual_salary_min) AS lowest_salary
-        FROM curated.fact_job_posting
-        WHERE 
-            is_tech_role = TRUE
-            AND posted_date BETWEEN '2020-01-01' AND '2025-12-31'
-            AND annual_salary_min IS NOT NULL
-            AND annual_salary_min > 1000
-        GROUP BY year
-        ORDER BY year;
+        if "lowest salary" in q and "tech" in q:
+            sql = """
+            SELECT
+                EXTRACT(year FROM posted_date) AS year,
+                MIN(annual_salary_min) AS lowest_salary
+            FROM curated.fact_job_posting
+            WHERE 
+                is_tech_role = TRUE
+                AND posted_date BETWEEN '2020-01-01' AND '2025-12-31'
+                AND annual_salary_min IS NOT NULL
+                AND annual_salary_min > 1000
+            GROUP BY year
+            ORDER BY year;
         """
         df = run_sql(sql)
         st.subheader("Lowest Tech Salaries by Year")
