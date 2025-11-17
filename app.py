@@ -336,9 +336,9 @@ with tab_jobs:
     industries = sorted(df["industry"].dropna().unique())
     selected_industry = st.selectbox("Industry", ["All"] + industries)
 
-    filtered = df.copy()
+    filtered_df = df.copy()
     if selected_industry != "All":
-        filtered = filtered[filtered["industry"] == selected_industry]
+        filtered_df = filtered_df[filtered["industry"] == selected_industry]
 
     st.subheader("Daily Job Postings (Newest First)")
     
