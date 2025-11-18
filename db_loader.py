@@ -1,32 +1,37 @@
+
 import os
 import requests
 import streamlit as st
+from pathlib import Path
 
-def ensure_database(db_path: str = "cayman_workforce.duckdb") -> str:
+def ensure_database() -> str:
     """
-    Ensures the DuckDB file exists locally.
-    Downloads from the GitHub Release DB_URL in Streamlit secrets if not present.
+    Ensures the DuckDB file (workforce.db) exists locally.
+    If not, downloads it from GitHub Releases via DB_URL.
     """
 
-    # If DB already exists locally, use it
-    if os.path.exists(db_path):
-        return db_path
+    db_path = Path("database") / "workforce.db"
 
-    # DB_URL must exist in secrets
+    # If DB already exists, use it
+    if db_path.exists():
+        return str(db_path)
+
+    # Must have DB_URL in Streamlit secrets
     if "DB_URL" not in st.secrets:
-        raise ValueError("DB_URL not found in Streamlit secrets.")
+        st.error("DB_URL missing from Streamlit secrets.")
+        raise ValueError("DB_URL missing from Streamlit secrets.")
 
     url = st.secrets["DB_URL"]
+    st.info(f"Downloading workforce.db from GitHub Release…")
 
-    st.write(f"Downloading workforce database from GitHub...")
-
-    # Required headers for GitHub Release assets
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/octet-stream",
     }
 
     try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
         with requests.get(url, stream=True, headers=headers, allow_redirects=True) as r:
             r.raise_for_status()
             with open(db_path, "wb") as f:
@@ -35,11 +40,8 @@ def ensure_database(db_path: str = "cayman_workforce.duckdb") -> str:
                         f.write(chunk)
 
     except Exception as e:
-        st.error(f"Database download failed: {e}")
+        st.error(f"Failed to download workforce.db: {e}")
         raise
 
     st.success("Database downloaded successfully.")
-    return db_path
-
-
-
+    return str(db_path)
