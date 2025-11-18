@@ -2,7 +2,6 @@
 
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 from app import ask_gpt
 
 from formatting import format_ci_currency, format_int
@@ -32,35 +31,36 @@ def render_analytics_response(
     # 2) Chart
     st.subheader("Chart")
 
-    fig, ax = plt.subplots()
+###############################
+# PLOTLY AUTO-CHART (RELIABLE)
+###############################
+import plotly.express as px
 
-    if chart_type == "auto":
-        # Very simple heuristic for now; we can refine later
-        if "year_month" in df.columns:
-            x_col = "year_month"
-        elif "posted_date" in df.columns:
-            x_col = "posted_date"
-        else:
-            x_col = df.columns[0]
+if chart_type == "auto":
+    # Pick x-axis
+    if "year_month" in df.columns:
+        x_col = "year_month"
+    elif "posted_date" in df.columns:
+        x_col = "posted_date"
+    else:
+        x_col = df.columns[0]
 
-        # pick a numeric y
-        numeric_cols = df.select_dtypes(include="number").columns.tolist()
-        y_col = numeric_cols[0] if numeric_cols else None
+    # Pick y-axis
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    y_col = numeric_cols[0] if numeric_cols else None
 
-        if y_col:
-            ax.plot(df[x_col], df[y_col], marker="o")
-            ax.set_xlabel(x_col)
-            ax.set_ylabel(y_col)
-        else:
-            # fallback to simple bar of counts
-            counts = df[x_col].value_counts().sort_index()
-            ax.bar(counts.index, counts.values)
-            ax.set_xlabel(x_col)
-            ax.set_ylabel("Count")
+    if y_col:
+        fig = px.line(df, x=x_col, y=y_col, markers=True)
+    else:
+        # fallback — just show counts by x_col
+        counts = df[x_col].value_counts().sort_index()
+        fig = px.bar(x=counts.index, y=counts.values)
 
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st.pyplot(fig)
+    fig.update_layout(xaxis_title=x_col, yaxis_title=y_col or "Count")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.write("Chart type not implemented yet.")
+
     else:
         # later we can add explicit chart types if needed
         st.write("Chart type not implemented yet.")
