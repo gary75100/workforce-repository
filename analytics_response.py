@@ -32,7 +32,12 @@ def render_analytics_response(
         if "salary" in col.lower():
             df_display[col] = df_display[col].apply(format_ci_currency)
 
-    st.dataframe(df_display)
+    st.dataframe(
+    df_display.style.set_properties(**{
+        "text-align": "right"
+    })
+)
+
 
     # 2) CHART
     st.subheader("Chart")
