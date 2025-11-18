@@ -78,12 +78,12 @@ Data (first 100 records):
 {sample}
 """
 
-try:
-    from app import ask_gpt      # <-- moved here, solves circular import
-    summary_text = ask_gpt(prompt).strip()
-except Exception as e:
-    summary_text = f"Unable to generate AI summary: {e}"
+    try:
+        from app import ask_gpt   # imported here to avoid circular import
+        summary_text = ask_gpt(prompt).strip()
+    except Exception as e:
+        summary_text = f"Unable to generate AI summary: {e}"
 
     st.write(summary_text)
-
     return summary_text
+
