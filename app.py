@@ -1,100 +1,168 @@
+###############################################################
+#  CAYMAN WORKFORCE INTELLIGENCE ASSISTANT — FULL PRODUCTION  #
+#  MODEL: GPT-4.1                                              #
+#  ARCHITECTURE: HYBRID SQL + AI                               #
+#  AUTHOR: ChatGPT                                              #
+#  FOR: Gary Allen (NFD / Cayman Workforce)                     #
+###############################################################
+
 import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
-from openai import OpenAI
+import time
+from openai import OpenAI, RateLimitError, APIError, APIConnectionError, APITimeoutError
 from db_loader import ensure_database
-# ---------------------------------------------
-# FIXED GPT CALL FUNCTION (place here!)
-# ---------------------------------------------
-MODEL_NAME = "gpt-4o"
 
-def ask_gpt(prompt):
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    resp = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": "You are a Cayman labour market AI analyst."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.1,
-        max_tokens=700
-    )
-    return resp.choices[0].message["content"].strip()
+
+###############################################################
+#  GLOBAL CONFIG
+###############################################################
 
 st.set_page_config(
     page_title="Cayman Workforce Intelligence Assistant",
     layout="wide"
 )
 
-MODEL_NAME = "gpt-4o"
+MODEL_NAME = "gpt-4.1"
+
+# Global primary OpenAI client
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# ============================================================
-#   DATABASE
-# ============================================================
+
+###############################################################
+#  SAFE GPT WRAPPER — dual-mode client + retries
+###############################################################
+
+def ask_gpt(prompt, system="You are a Cayman labour market analyst. Provide clear, factual insights based on the data."):
+    """
+    Production-safe GPT caller with:
+    - retry handling
+    - fallback client instantiation
+    - descriptive error messages
+    - rate limit protection
+    """
+
+    retries = 4
+    delay = 1
+
+    for attempt in range(retries):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=900,
+            )
+            return response.choices[0].message["content"].strip()
+
+        except RateLimitError:
+            if attempt < retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return "The AI is currently receiving too many requests. Please try again shortly."
+
+        except (APIError, APIConnectionError, APITimeoutError):
+            # Fallback client — instantiate a new connection
+            try:
+                fallback_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                response = fallback_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=900,
+                )
+                return response.choices[0].message["content"].strip()
+            except:
+                if attempt < retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return "AI service is temporarily unavailable. Please try again."
+
+        except Exception as e:
+            return f"AI Error: {str(e)}"
+
+    return "The AI could not respond. Please try again."
+
+
+###############################################################
+#  DATABASE
+###############################################################
+
 db_path = ensure_database()
 conn = duckdb.connect(db_path, read_only=False)
 
 def run_sql(sql: str) -> pd.DataFrame:
     return conn.execute(sql).df()
 
-# ============================================================
-#   GPT HELPER
-# ============================================================
-def ask_gpt(prompt, system="You are a Cayman workforce analyst."):
-    resp = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2,
-        max_tokens=900,
-    )
-    return resp.choices[0].message.content.strip()
 
-# ============================================================
-#   UI: PAGE TITLE + TABS
-# ============================================================
-st.title("🇰🇾 Cayman Workforce Intelligence Assistant")
-
-tab_chat, tab_lfs, tab_wages, tab_jobs, tab_policy = st.tabs(
-    ["💬 Ask Anything", "📊 LFS", "💵 Wages", "📈 Job Postings", "📘 SPS"]
-)
-# ============================================================
-# GLOBAL CURRENCY SELECTOR
-# ============================================================
-currency = st.selectbox("Currency:", ["CI$", "US$"], index=0)
-
-def convert(value):
-    if currency == "CI$":
-        return value
-    elif currency == "US$":
-        return value * 1.20   # Standard Cayman-to-US conversion unless you give me another rate
-    return value
+###############################################################
+#  CURRENCY FORMATTER (CI$ ONLY)
+###############################################################
 
 def fmt(value):
-    if value is None or pd.isna(value):
-        return ""
-    if currency == "CI$":
-        return f"CI${value:,.2f}"
-    else:
-        return f"US${convert(value):,.2f}"
+    if value is None:
+        return "—"
+    return f"CI${value:,.0f}"
 
-# ============================================================
-# TAB 1 — ASK ANYTHING (INTENT ROUTER + 7 GUARANTEED ANSWERS)
-# ============================================================
+
+###############################################################
+#  INTENT CLASSIFIER
+###############################################################
+
+INTENT_LABELS = """
+- highest_tech_salary_by_year
+- lowest_tech_salary_by_year
+- average_tech_salary_by_year
+- employer_most_tech_roles
+- employer_least_tech_roles
+- entry_level_tech_roles
+- tech_salary_trend
+- general_question
+"""
+
+def classify_intent(q: str) -> str:
+    prompt = f"""
+    Classify the following user question into EXACTLY one of these labels:
+
+    {INTENT_LABELS}
+
+    USER QUESTION:
+    "{q}"
+
+    Respond with ONLY the label. No explanation.
+    """
+
+    return ask_gpt(prompt).strip().lower()
+
+
+###############################################################
+#  STREAMLIT UI SETUP
+###############################################################
+
+st.title("🇰🇾 Cayman Workforce Intelligence Assistant")
+
+tab_chat, tab_lfs, tab_wages, tab_jobs, tab_sps = st.tabs(
+    ["💬 Ask Anything", "📊 LFS", "💵 Wages", "📈 Job Postings", "📘 SPS"]
+)
+
+
+################################################################
+#  TAB 1 — ASK ANYTHING (with intent routing)
+################################################################
 
 with tab_chat:
 
     st.header("Ask any workforce question")
 
-    # Chat history for multi-turn conversation
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
-    # User input
     user_q = st.text_input(
         "Your question:",
         placeholder="e.g., What employer posts the most tech roles?",
@@ -104,46 +172,23 @@ with tab_chat:
     if not user_q:
         st.stop()
 
-    # -----------------------------------------------------------
-    # STEP 1 — GPT INTENT CLASSIFIER
-    # -----------------------------------------------------------
-
-    intent_prompt = f"""
-    Classify the user's workforce question into EXACTLY one of these labels.
-    Respond with ONLY the label, nothing else.
-
-    LABELS:
-    - highest_tech_salary_by_year
-    - lowest_tech_salary_by_year
-    - average_tech_salary_by_year
-    - employer_most_tech_roles
-    - employer_least_tech_roles
-    - entry_level_tech_roles
-    - tech_salary_trend
-    - general_question
-
-    USER QUESTION:
-    "{user_q}"
-    """
-
-    intent = ask_gpt(intent_prompt).strip().lower()
-
+    intent = classify_intent(user_q)
     st.info(f"Detected intent: **{intent}**")
 
-    # -----------------------------------------------------------
-    # STEP 2 — INTENT ROUTER → RUN RELEVANT SQL
-    # -----------------------------------------------------------
+    # =====================================================================
+    # Guaranteed SQL-based answers (7 core questions)
+    # =====================================================================
 
-    # Helper to render results uniformly
-    def show_table_and_chart(df, x=None, y=None, title=None):
+    # Helper for rendering
+    def render(df, x=None, y=None, title=None):
         st.dataframe(df, use_container_width=True)
         if x and y:
             fig = px.line(df, x=x, y=y, title=title, markers=True)
             st.plotly_chart(fig, use_container_width=True)
 
-    # -------------------------------
-    # INTENT: employer_most_tech_roles
-    # -------------------------------
+    q = user_q.lower()
+
+    # 1. Employer with most tech roles ------------------------------------
     if intent == "employer_most_tech_roles":
         sql = """
         SELECT employer_name, COUNT(*) AS tech_roles
@@ -151,16 +196,15 @@ with tab_chat:
         WHERE is_tech_role = TRUE
         GROUP BY employer_name
         ORDER BY tech_roles DESC
-        LIMIT 1
+        LIMIT 1;
         """
         df = run_sql(sql)
-        show_table_and_chart(df)
-        ai_answer = ask_gpt(f"Explain which employer posts the most tech roles:\n{df.to_json()}")
+        render(df)
+        st.write(ask_gpt(f"Explain why this employer appears most frequently:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: employer_least_tech_roles
-    # -------------------------------
-    elif intent == "employer_least_tech_roles":
+    # 2. Employer with least tech roles -----------------------------------
+    if intent == "employer_least_tech_roles":
         sql = """
         SELECT employer_name, COUNT(*) AS tech_roles
         FROM curated.fact_job_posting
@@ -168,163 +212,115 @@ with tab_chat:
         GROUP BY employer_name
         HAVING COUNT(*) > 0
         ORDER BY tech_roles ASC
-        LIMIT 1
+        LIMIT 1;
         """
         df = run_sql(sql)
-        show_table_and_chart(df)
-        ai_answer = ask_gpt(f"Explain which employer posts the fewest tech roles:\n{df.to_json()}")
+        render(df)
+        st.write(ask_gpt(f"Explain why this employer has the fewest tech roles:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: entry_level_tech_roles
-    # -------------------------------
-    elif intent == "entry_level_tech_roles":
+    # 3. Entry-level tech roles -------------------------------------------
+    if intent == "entry_level_tech_roles":
         sql = """
         SELECT job_title, employer_name, required_education, years_experience
         FROM curated.fact_job_posting
-        WHERE is_entry_level = TRUE
-          AND is_tech_role = TRUE
+        WHERE is_entry_level = TRUE AND is_tech_role = TRUE
         ORDER BY posted_date DESC
-        LIMIT 200
+        LIMIT 200;
         """
         df = run_sql(sql)
-        show_table_and_chart(df)
-        ai_answer = ask_gpt(f"Summarize entry-level tech roles and common requirements:\n{df.to_json()}")
+        render(df)
+        st.write(ask_gpt(f"Summarize common entry-level requirements:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: highest_tech_salary_by_year
-    # -------------------------------
-    elif intent == "highest_tech_salary_by_year":
+    # 4. Highest tech salaries by year ------------------------------------
+    if intent == "highest_tech_salary_by_year":
         sql = """
-        SELECT
-            EXTRACT(YEAR FROM posted_date) AS year,
-            MAX(salary_max) AS highest_salary
+        SELECT EXTRACT(YEAR FROM posted_date) AS year,
+               MAX(salary_max) AS highest_salary
         FROM curated.fact_job_posting
         WHERE is_tech_role = TRUE
         GROUP BY year
-        ORDER BY year
+        ORDER BY year;
         """
         df = run_sql(sql)
         df["highest_salary"] = df["highest_salary"].apply(fmt)
-        show_table_and_chart(df, x="year", y="highest_salary", title="Highest Tech Salaries by Year")
-        ai_answer = ask_gpt(f"Explain highest tech salaries by year:\n{df.to_json()}")
+        render(df, x="year", y="highest_salary", title="Highest Tech Salary by Year")
+        st.write(ask_gpt(f"Explain the tech salary ceiling over time:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: lowest_tech_salary_by_year
-    # -------------------------------
-    elif intent == "lowest_tech_salary_by_year":
+    # 5. Lowest tech salaries by year -------------------------------------
+    if intent == "lowest_tech_salary_by_year":
         sql = """
-        SELECT
-            EXTRACT(YEAR FROM posted_date) AS year,
-            MIN(salary_min) AS lowest_salary
+        SELECT EXTRACT(YEAR FROM posted_date) AS year,
+               MIN(salary_min) AS lowest_salary
         FROM curated.fact_job_posting
         WHERE is_tech_role = TRUE
+          AND salary_min > 1000
         GROUP BY year
-        ORDER BY year
+        ORDER BY year;
         """
         df = run_sql(sql)
         df["lowest_salary"] = df["lowest_salary"].apply(fmt)
-        show_table_and_chart(df, x="year", y="lowest_salary", title="Lowest Tech Salaries by Year")
-        ai_answer = ask_gpt(f"Explain lowest tech salaries by year:\n{df.to_json()}")
+        render(df, x="year", y="lowest_salary", title="Lowest Tech Salary by Year")
+        st.write(ask_gpt(f"Explain the lower salary bounds for tech roles:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: average_tech_salary_by_year
-    # -------------------------------
-    elif intent == "average_tech_salary_by_year":
+    # 6. Average tech salaries by year ------------------------------------
+    if intent == "average_tech_salary_by_year":
         sql = """
-        SELECT
-            EXTRACT(YEAR FROM posted_date) AS year,
-            AVG((salary_min + salary_max)/2) AS avg_salary
+        SELECT EXTRACT(YEAR FROM posted_date) AS year,
+               AVG((salary_min + salary_max)/2) AS avg_salary
         FROM curated.fact_job_posting
         WHERE is_tech_role = TRUE
         GROUP BY year
-        ORDER BY year
+        ORDER BY year;
         """
         df = run_sql(sql)
         df["avg_salary"] = df["avg_salary"].apply(fmt)
-        show_table_and_chart(df, x="year", y="avg_salary", title="Average Tech Salary by Year")
-        ai_answer = ask_gpt(f"Explain average tech salaries by year:\n{df.to_json()}")
+        render(df, x="year", y="avg_salary", title="Average Tech Salary by Year")
+        st.write(ask_gpt(f"Explain average earnings for tech roles:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: tech_salary_trend
-    # -------------------------------
-    elif intent == "tech_salary_trend":
+    # 7. Tech salary trend -------------------------------------------------
+    if intent == "tech_salary_trend":
         sql = """
-        SELECT
-            posted_date,
-            (salary_min + salary_max)/2 AS salary
+        SELECT posted_date,
+               (salary_min + salary_max)/2 AS salary
         FROM curated.fact_job_posting
         WHERE is_tech_role = TRUE
-        ORDER BY posted_date
+        ORDER BY posted_date;
         """
         df = run_sql(sql)
         df["salary"] = df["salary"].apply(fmt)
-        show_table_and_chart(df, x="posted_date", y="salary", title="Tech Salary Trend Over Time")
-        ai_answer = ask_gpt(f"Explain tech salary trend:\n{df.to_json()}")
+        render(df, x="posted_date", y="salary", title="Tech Salary Trend Over Time")
+        st.write(ask_gpt(f"Interpret Cayman tech salary momentum:\n{df.to_json()}"))
+        st.stop()
 
-    # -------------------------------
-    # INTENT: general_question → fall back to GPT
-    # -------------------------------
-    else:
-        sample = run_sql("SELECT * FROM curated.fact_job_posting ORDER BY posted_date DESC LIMIT 50")
-        sample_json = sample.to_json(orient="records")
-        ai_answer = ask_gpt(
-            f"User asked: {user_q}\nHere is sample Cayman workforce data:\n{sample_json}\nAnswer the question factually."
-        )
+    # =====================================================================
+    # GENERAL QUESTION (fallback)
+    # =====================================================================
 
-    # -----------------------------------------------------------
-    # STEP 3 — DISPLAY AI ANSWER + STORE IN CHAT HISTORY
-    # -----------------------------------------------------------
+    sample = run_sql("""
+        SELECT *
+        FROM curated.fact_job_posting
+        ORDER BY posted_date DESC
+        LIMIT 50;
+    """)
+
+    ai_answer = ask_gpt(
+        f"User asked: {user_q}\nHere is sample Cayman labour market data:\n{sample.to_json(orient='records')}\nAnswer clearly and factually."
+    )
+
     st.subheader("AI Analysis")
     st.write(ai_answer)
 
-    st.session_state.chat_history.append(("You", user_q))
-    st.session_state.chat_history.append(("Assistant", ai_answer))
 
-        # ======================
-        # FALLBACK — FREEFORM AI
-        # ======================
-        else:
-            st.subheader("AI Analysis")
+################################################################
+#  TAB 2 — LFS
+################################################################
 
-            sample_df = run_sql("""
-                SELECT *
-                FROM curated.fact_job_posting
-                ORDER BY posted_date DESC
-                LIMIT 50
-            """)
-
-            sample_context = sample_df.to_markdown(index=False)
-
-            prompt = f"""
-User question:
-{user_q}
-
-Here is a recent sample of Cayman job posting data:
-{sample_context}
-
-Answer the user's question directly, using:
-- Cayman labour market context
-- industry patterns
-- job posting trends
-- SPS policy alignment (if applicable)
-"""
-
-            ai_answer = ask_gpt(prompt)
-            st.write(ai_answer)
-
-        # Save conversation
-        st.session_state.chat_history.append(("You", user_q))
-        st.session_state.chat_history.append(("Assistant", ai_answer if 'ai_answer' in locals() else ""))
-
-        # Show conversation
-        st.subheader("Conversation")
-        for role, msg in st.session_state.chat_history:
-            st.markdown(f"**{role}:** {msg}")
-# ============================================================
-#   TAB 2 — LFS (Labour Force Survey)
-# ============================================================
 with tab_lfs:
-
     st.header("Labour Force Survey (LFS)")
 
     df = run_sql("""
@@ -332,196 +328,125 @@ with tab_lfs:
         FROM curated.fact_lfs_overview_status
         ORDER BY survey_date DESC
     """)
-
-    st.subheader("LFS Overview (Newest First)")
     st.dataframe(df, use_container_width=True)
 
-    # Trend chart
-    fig = px.line(
-        df,
-        x="survey_date",
-        y="value",
-        color="status",
-        title="LFS Labour Status Trend"
-    )
+    fig = px.line(df, x="survey_date", y="value", color="status", title="Labour Force Status Trend")
     st.plotly_chart(fig, use_container_width=True)
 
-    # AI Summary
     if st.button("Summarize LFS with AI"):
-        snippet = df.head(50).to_markdown(index=False)
-        prompt = f"""
-Summarize key trends in the latest Cayman Labour Force Survey:
-{snippet}
-
-Highlight:
-- labour force participation
-- employment vs unemployment
-- Caymanian vs non-Caymanian differences
-"""
-        st.write(ask_gpt(prompt))
+        st.write(ask_gpt(f"Summarize Cayman LFS:\n{df.to_json()}"))
 
 
-# ============================================================
-#   TAB 3 — WAGES (Occupational Wage Survey)
-# ============================================================
+################################################################
+#  TAB 3 — WAGES
+################################################################
+
 with tab_wages:
-
     st.header("Occupational Wage Survey (OWS)")
 
     df = run_sql("""
         SELECT *
         FROM curated.fact_wages
+        WHERE category='industry' AND measure_type='basic_earnings' AND metric='mean'
         ORDER BY survey_date DESC
-        LIMIT 500
     """)
 
-    st.subheader("Wage Records (Newest First)")
-    df["value_fmt"] = df["value"].apply(fmt)
-    st.dataframe(df[["subcategory", "value_fmt"]])
+    df["value"] = df["value"].apply(fmt)
 
-    # Chart: mean earnings by industry if available
-    if "subcategory" in df.columns and "value" in df.columns:
-        fig = px.bar(
-            df,
-            x="subcategory",
-            y=df["value"].apply(convert),
-            color="category",
-            title="Wage Levels by Industry / Category"
-        )
-        fig.update_layout(xaxis_tickangle=45)
-        st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(df, use_container_width=True)
+    fig = px.bar(df, x="subcategory", y="value", title="Mean Monthly Earnings by Industry")
+    fig.update_layout(xaxis_tickangle=45)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # --- AI SUMMARY ---------------------------------------------------
-    if st.button("Summarize Wages with AI"):
-        snippet = df.head(50).to_markdown(index=False)
-        prompt = f"""
-Provide a clear executive summary of Cayman wage levels based on this dataset:
+    if st.button("Summarize Wage Patterns"):
+        st.write(ask_gpt(f"Summarize Cayman wage levels:\n{df.to_json()}"))
 
-{snippet}
 
-Explain:
-- which industries pay the most and least
-- year-over-year changes
-- tech vs non-tech earnings gaps (if visible)
-- any anomalies or notable patterns
-"""
-        st.write(ask_gpt(prompt))
+################################################################
+#  TAB 4 — JOB POSTINGS EXPLORER
+################################################################
 
-# ============================================================
-#   TAB 4 — JOB POSTINGS EXPLORER
-# ============================================================
 with tab_jobs:
 
     st.header("Job Postings Explorer")
 
     df = run_sql("""
-        SELECT 
-            posted_date,
-            industry,
-            employer_name,
-            job_title,
-            salary_min,
-            salary_max,
-            is_tech_role,
-            is_entry_level
+        SELECT *
         FROM curated.fact_job_posting
         ORDER BY posted_date DESC
     """)
 
     # Filters
-    industries = sorted(df["industry"].dropna().unique())
-    selected_industry = st.selectbox("Industry", ["All"] + industries)
+    industries = ["All"] + sorted(df["industry"].dropna().unique().tolist())
+    employers = ["All"] + sorted(df["employer_name"].dropna().unique().tolist())
 
-    filtered_df = df.copy()
-    if selected_industry != "All":
-        filtered_df = filtered_df[filtered_df["industry"] == selected_industry]
+    c1, c2, c3 = st.columns(3)
 
-    st.subheader("Daily Job Postings (Newest First)")
-    
-    # Apply formatting ONLY to salary columns
-    show_df = filtered_df.copy()
+    f_industry = c1.selectbox("Industry", industries)
+    f_employer = c2.selectbox("Employer", employers)
+    date_range = c3.date_input("Date Range", [df["posted_date"].min(), df["posted_date"].max()])
+
+    filtered = df.copy()
+    filtered = filtered[
+        (filtered["posted_date"] >= pd.to_datetime(date_range[0])) &
+        (filtered["posted_date"] <= pd.to_datetime(date_range[1]))
+    ]
+
+    if f_industry != "All":
+        filtered = filtered[filtered["industry"] == f_industry]
+
+    if f_employer != "All":
+        filtered = filtered[filtered["employer_name"] == f_employer]
+
+    # Table
+    show_df = filtered.copy()
     show_df["salary_min"] = show_df["salary_min"].apply(fmt)
     show_df["salary_max"] = show_df["salary_max"].apply(fmt)
-    
     st.dataframe(show_df, use_container_width=True, height=500)
-# --- QUICK INSIGHTS ---------------------------------------------
-st.subheader("Quick Insights")
 
-# Last 6 months filter
-six_months_ago = pd.to_datetime("today") - pd.Timedelta(days=180)
-last_6_months_df = filtered_df[filtered_df["posted_date"] >= six_months_ago]
+    # Trend
+    st.subheader("Posting Trend")
 
-colA, colB, colC = st.columns(3)
-colA.metric("Total Postings (Last 6 Months)", len(last_6_months_df))
-colB.metric("Tech Roles (Last 6 Months)", last_6_months_df['is_tech_role'].sum())
-colC.metric("Entry Level Roles (Last 6 Months)", last_6_months_df['is_entry_level'].sum())
+    filtered["month"] = pd.to_datetime(filtered["posted_date"]).dt.to_period("M").dt.to_timestamp()
 
-# Salary insights (converted)
-if len(filtered_df) > 0:
-    avg_min = filtered_df["salary_min"].mean()
-    avg_max = filtered_df["salary_max"].mean()
+    trend = filtered.groupby(["month", "industry"]).size().reset_index(name="postings")
 
-    st.metric("Avg Minimum Salary", fmt(avg_min))
-    st.metric("Avg Maximum Salary", fmt(avg_max))
+    st.plotly_chart(
+        px.line(trend, x="month", y="postings", color="industry", markers=True),
+        use_container_width=True
+    )
 
+    # Metrics (last 6 months)
+    st.subheader("Quick Insights")
 
-# Trend chart
-st.subheader("Posting Trend")
+    six_months_ago = pd.to_datetime("today") - pd.Timedelta(days=180)
+    recent = filtered[filtered["posted_date"] >= six_months_ago]
 
-# Create month column safely
-filtered_df["month"] = pd.to_datetime(filtered_df["posted_date"]).dt.to_period("M").dt.to_timestamp()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Postings", len(recent))
+    m2.metric("Tech Roles", int(recent["is_tech_role"].sum()))
+    m3.metric("Entry-Level Roles", int(recent["is_entry_level"].sum()))
 
-# Group by month + industry
-trend = filtered_df.groupby(["month", "industry"]).size().reset_index(name="postings")
-
-# Plot
-st.plotly_chart(
-    px.line(
-        trend,
-        x="month",
-        y="postings",
-        color="industry",
-        markers=True,
-        title="Job Posting Trend by Industry"
-    ),
-    use_container_width=True
-)
-
-# Metrics
-col1, col2, col3 = st.columns(3)
-col1.metric("Total", len(filtered_df))
-col2.metric("Tech Roles", int(filtered_df["is_tech_role"].sum()))
-col3.metric("Entry-Level", int(filtered_df["is_entry_level"].sum()))
-
-if st.button("Summarize Job Postings with AI"):
-    snippet = filtered_df.head(50).to_json(orient="records")
-    st.write(
-    ask_gpt(f"Summarize Cayman job posting activity:\n{snippet}")
-)
+    # AI Summary
+    if st.button("Summarize This Dataset"):
+        st.write(ask_gpt(f"Summarize patterns in Cayman job postings:\n{show_df.head(50).to_json()}"))
 
 
-# ============================================================
-#   TAB 5 — SPS (Strategic Policy Statement)
-# ============================================================
-with tab_policy:
+################################################################
+#  TAB 5 — SPS
+################################################################
 
+with tab_sps:
     st.header("Strategic Policy Statement (SPS)")
 
     df = run_sql("""
         SELECT *
         FROM curated.fact_sps_context
-        ORDER BY page ASC
+        ORDER BY page DESC
     """)
 
-    st.subheader("SPS Context Blocks")
     st.dataframe(df, use_container_width=True)
 
-    if st.button("Summarize SPS Workforce Direction with AI"):
-        snippet = df.head(50).to_markdown(index=False)
-        prompt = f"""
-Provide a clear executive-level summary of SPS workforce, education, immigration,
-economic, and social development direction, using this data:
+    if st.button("Summarize SPS Direction"):
+        st.write(ask_gpt(f"Summarize major SPS themes related to workforce:\n{df.to_json()}"))
 
-{snippet}
-"""
-        st.write(ask_gpt(prompt))
