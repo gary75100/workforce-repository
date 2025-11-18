@@ -9,7 +9,7 @@ import plotly.express as px
 import time
 from datetime import datetime, timedelta
 from openai import OpenAI, RateLimitError, APIError, APIConnectionError, APITimeoutError
-
+from analytics_response import render_analytics_response
 from db_loader import ensure_database
 
 
@@ -260,13 +260,17 @@ def answer_highest_tech_salary():
         GROUP BY year
         ORDER BY year;
     """
-    df = run_sql(sql)
-    df["highest_salary"] = df["highest_salary"].apply(fmt_currency)
-    render_table(df, "Highest Tech Salary by Year")
-    render_line(df, "year", "highest_salary", title="Tech Salary Ceiling Trend")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Explain the tech salary ceiling trend:\n{df.to_json()}"))
 
+    df = run_sql(sql)
+
+    # Use the central analytics response contract
+    render_analytics_response(
+        df=df,
+        question="What is the highest tech salary by year?",
+        gpt_client=client,  # your existing OpenAI client
+        summary_title="Executive Summary",
+        chart_type="auto"
+    )
 
 def answer_lowest_tech_salary():
     sql = """
