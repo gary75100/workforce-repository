@@ -4,3 +4,4 @@ pandas
 plotly
 openai
 tabulate
+fpdf2
