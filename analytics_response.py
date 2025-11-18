@@ -2,7 +2,6 @@
 
 import streamlit as st
 import pandas as pd
-from app import ask_gpt
 from formatting import format_ci_currency, format_int
 import plotly.express as px
 
@@ -79,10 +78,11 @@ Data (first 100 records):
 {sample}
 """
 
-    try:
-        summary_text = ask_gpt(prompt).strip()
-    except Exception as e:
-        summary_text = f"Unable to generate AI summary: {e}"
+try:
+    from app import ask_gpt      # <-- moved here, solves circular import
+    summary_text = ask_gpt(prompt).strip()
+except Exception as e:
+    summary_text = f"Unable to generate AI summary: {e}"
 
     st.write(summary_text)
 
