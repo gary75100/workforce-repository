@@ -375,7 +375,7 @@ with tab_chat:
         if intent == "tech_salary_trend":
             answer_tech_salary_trend()
             st.stop()
-
+    else:
         # GENERAL QUESTION — fallback GPT
         st.subheader("AI Analysis")
 
