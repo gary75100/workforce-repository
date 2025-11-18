@@ -32,13 +32,21 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 #  GPT ENGINE — ENTERPRISE SAFE
 ###############################################################
 
-def ask_gpt(prompt, system="You are a Cayman labour market analyst. Provide precise, executive-level insights based on the data."):
+from openai import OpenAI
+from openai import APIError, APIConnectionError, APITimeoutError, RateLimitError
+import time
+
+def ask_gpt(
+    prompt,
+    system="You are a Cayman labour market analyst. Provide precise, executive-level insights based on the data."
+):
     """
-    Production-safe GPT caller with:
-    - retry logic
-    - fallback client on connection errors
-    - standardized structured outputs
-    - OpenAI v1 SDK correct message access
+    Enterprise-safe GPT caller with:
+    - Retry logic with exponential backoff
+    - Graceful rate-limit handling
+    - Fallback client recovery
+    - Clean, predictable output
+    - No exceptions propagate to UI
     """
 
     retries = 4
@@ -55,17 +63,20 @@ def ask_gpt(prompt, system="You are a Cayman labour market analyst. Provide prec
                 temperature=0.2,
                 max_tokens=900,
             )
+
+            # Correct OpenAI v1 SDK access
             return response.choices[0].message.content.strip()
 
         except RateLimitError:
+            # === RATE LIMIT HANDLING (your problem from this morning) ===
             if attempt < retries - 1:
                 time.sleep(delay)
                 delay *= 2
                 continue
-            return "AI Error: Rate limit reached."
+            return "⚠️ AI is temporarily rate-limited. Please retry in a moment."
 
         except (APIError, APIConnectionError, APITimeoutError):
-            # fallback connection
+            # === FALLBACK CLIENT RECOVERY ===
             try:
                 fallback = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
                 response = fallback.chat.completions.create(
@@ -86,13 +97,13 @@ def ask_gpt(prompt, system="You are a Cayman labour market analyst. Provide prec
                 delay *= 2
                 continue
 
-            return "AI Error: Could not connect to OpenAI."
+            return "⚠️ AI Error: Unable to contact OpenAI."
 
         except Exception as e:
-            return f"AI Error: {e}"
+            # === CATCH-ALL PROTECTION ===
+            return f"⚠️ AI Error: {str(e)}"
 
-    return "AI Error: Fatal."
-
+    return "⚠️ AI Error: Fatal failure."
 
 ###############################################################
 #  DATABASE SETUP
