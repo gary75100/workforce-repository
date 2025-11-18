@@ -375,23 +375,23 @@ with tab_chat:
         if intent == "tech_salary_trend":
             answer_tech_salary_trend()
             st.stop()
-    else:
-        # GENERAL QUESTION — fallback GPT
-        st.subheader("AI Analysis")
-
-        # Provide recent sample for context
-        sample = run_sql("""
-            SELECT *
-            FROM curated.fact_job_posting
-            ORDER BY posted_date DESC
-            LIMIT 50;
-        """)
-
-        ai_answer = ask_gpt(
-            f"User asked: {user_q}\nHere is recent Cayman labour data:\n{sample.to_json(orient='records')}\nProvide an accurate, executive-level answer."
-        )
-
-        st.write(ai_answer)
+        else:
+            # GENERAL QUESTION — fallback GPT
+            st.subheader("AI Analysis")
+    
+            # Provide recent sample for context
+            sample = run_sql("""
+                SELECT *
+                FROM curated.fact_job_posting
+                ORDER BY posted_date DESC
+                LIMIT 50;
+            """)
+    
+            ai_answer = ask_gpt(
+                f"User asked: {user_q}\nHere is recent Cayman labour data:\n{sample.to_json(orient='records')}\nProvide an accurate, executive-level answer."
+            )
+    
+            st.write(ai_answer)
 ###############################################################
 #  SECTION 3 — LFS TAB (Labour Force Survey)
 ###############################################################
