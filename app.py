@@ -520,6 +520,15 @@ with tab_lfs:
     ###########################################################
     # LFS TAB — SUMMARIZE DATA
     ###########################################################
+# AUTO-SUMMARY ON TAB LOAD
+if "auto_lfs_summary" not in st.session_state:
+    combined = pd.concat([df_status, df_participation, df_sex]).head(200)
+    auto_summary = ask_gpt(
+        f"Provide an executive summary of the Cayman LFS using only this data:\n{combined.to_json(orient='records')}"
+    )
+    st.markdown("### AI Summary")
+    st.write(auto_summary)
+    st.session_state["auto_lfs_summary"] = True
 
     st.subheader("Summarize the Latest LFS Data")
 
@@ -679,6 +688,15 @@ with tab_wages:
     ###########################################################
     # WAGES TAB — SUMMARIZE DATA
     ###########################################################
+# AUTO-SUMMARY — WAGES
+if "auto_wages_summary" not in st.session_state:
+    combined = df_wages[df_wages["survey_date"] == latest_wage_date]
+    auto_wage_summary = ask_gpt(
+        f"Provide an executive Cayman OWS earnings summary using only this data:\n{combined.to_json(orient='records')}"
+    )
+    st.markdown("### AI Summary")
+    st.write(auto_wage_summary)
+    st.session_state["auto_wages_summary"] = True
 
     st.subheader("Summarize Wage Survey With AI")
 
@@ -812,6 +830,15 @@ with tab_jobs:
     ###########################################################
     # JOBS TAB — SUMMARIZE DATASET WITH AI
     ###########################################################
+# AUTO-SUMMARY — JOB POSTINGS
+if "auto_jobs_summary" not in st.session_state:
+    auto_jobs = recent_jobs.head(200).to_json(orient='records')
+    auto_jobs_summary = ask_gpt(
+        f"Provide an executive summary of Cayman job postings using only this data:\n{auto_jobs}"
+    )
+    st.markdown("### AI Summary")
+    st.write(auto_jobs_summary)
+    st.session_state["auto_jobs_summary"] = True
 
     st.subheader("Summarize Job Posting Trends")
 
@@ -898,6 +925,15 @@ with tab_sps:
     ###########################################################
     # SPS TAB — SUMMARIZE DATASET
     ###########################################################
+# AUTO-SUMMARY — SPS
+if "auto_sps_summary" not in st.session_state:
+    snippet = df_sps.head(200).to_json(orient="records")
+    auto_sps_summary = ask_gpt(
+        f"Provide an executive Cayman SPS workforce policy summary using only this data:\n{snippet}"
+    )
+    st.markdown("### AI Summary")
+    st.write(auto_sps_summary)
+    st.session_state["auto_sps_summary"] = True
 
     st.subheader("Summarize SPS Workforce Direction")
 
