@@ -26,7 +26,13 @@ def render_analytics_response(
 
     # 1) DATA TABLE
     st.subheader("Data")
-    st.dataframe(df)
+
+    df_display = df.copy()
+    for col in df_display.columns:
+        if "salary" in col.lower():
+            df_display[col] = df_display[col].apply(format_ci_currency)
+
+    st.dataframe(df_display)
 
     # 2) CHART
     st.subheader("Chart")
