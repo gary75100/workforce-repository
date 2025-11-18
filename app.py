@@ -1,17 +1,17 @@
+###############################################################
+#  SECTION 1 — GLOBAL IMPORTS + CONFIG + GPT ENGINE + DB SETUP
+###############################################################
+
 import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
-from openai import OpenAI
-from db_loader import ensure_database
-from export_pdf import export_summary_to_pdf   # ← Correct spot for 2A
+import time
+from datetime import datetime, timedelta
+from openai import OpenAI, RateLimitError, APIError, APIConnectionError, APITimeoutError
 
-# Load Cayman UI Skin (safe, non-destructive)
-try:
-    with open("app/style.css") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-except:
-    pass
+from db_loader import ensure_database
+
 
 ###############################################################
 #  STREAMLIT PAGE SETTINGS
@@ -366,17 +366,6 @@ with tab_chat:
         )
 
         st.write(ai_answer)
-# PDF Export Button
-with st.expander("📄 Export this analysis"):
-    if st.button("Download PDF"):
-        pdf_file = export_summary_to_pdf(ai_answer)
-        st.download_button(
-            label="Click to download PDF",
-            data=pdf_file,
-            file_name="analysis.pdf",
-            mime="application/pdf"
-        )
-
 ###############################################################
 #  SECTION 3 — LFS TAB (Labour Force Survey)
 ###############################################################
@@ -384,17 +373,6 @@ with st.expander("📄 Export this analysis"):
 with tab_lfs:
 
     st.header("Labour Force Survey (LFS)")
-    
-# PDF Export (LFS)
-with st.expander("📄 Export this LFS summary"):
-    if st.button("Download LFS PDF"):
-        pdf_file = export_summary_to_pdf(summary_text)
-        st.download_button(
-            label="Click to download LFS summary",
-            data=pdf_file,
-            file_name="lfs_summary.pdf",
-            mime="application/pdf"
-        )
 
     ###########################################################
     # LOAD MOST RECENT LFS DATA
@@ -675,16 +653,6 @@ with tab_wages:
         )
         st.markdown("### AI Answer")
         st.write(analysis)
-# PDF Export (LFS)
-with st.expander("📄 Export this LFS summary"):
-    if st.button("Download LFS PDF"):
-        pdf_file = export_summary_to_pdf(summary_text)
-        st.download_button(
-            label="Click to download LFS summary",
-            data=pdf_file,
-            file_name="lfs_summary.pdf",
-            mime="application/pdf"
-        )
 
     ###########################################################
     # WAGES TAB — SUMMARIZE DATA
@@ -844,16 +812,6 @@ with tab_jobs:
         )
         st.markdown("### AI Summary")
         st.write(summary)
-# PDF Export (LFS)
-with st.expander("📄 Export this LFS summary"):
-    if st.button("Download LFS PDF"):
-        pdf_file = export_summary_to_pdf(summary_text)
-        st.download_button(
-            label="Click to download LFS summary",
-            data=pdf_file,
-            file_name="lfs_summary.pdf",
-            mime="application/pdf"
-        )
 
 
 ###############################################################
@@ -914,16 +872,6 @@ with tab_sps:
         )
         st.markdown("### AI Answer")
         st.write(answer)
-# PDF Export (LFS)
-with st.expander("📄 Export this LFS summary"):
-    if st.button("Download LFS PDF"):
-        pdf_file = export_summary_to_pdf(summary_text)
-        st.download_button(
-            label="Click to download LFS summary",
-            data=pdf_file,
-            file_name="lfs_summary.pdf",
-            mime="application/pdf"
-        )
 
     ###########################################################
     # SPS TAB — SUMMARIZE DATASET
