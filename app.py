@@ -34,64 +34,20 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 #  SAFE GPT WRAPPER — dual-mode client + retries
 ###############################################################
 
-def ask_gpt(prompt, system="You are a Cayman labour market analyst. Provide clear, factual insights based on the data."):
-    """
-    Production-safe GPT caller with:
-    - retry handling
-    - fallback client instantiation
-    - descriptive error messages
-    - rate limit protection
-    """
-
-    retries = 4
-    delay = 1
-
-    for attempt in range(retries):
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=900,
-            )
-            return response.choices[0].message["content"].strip()
-
-        except RateLimitError:
-            if attempt < retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            return "The AI is currently receiving too many requests. Please try again shortly."
-
-        except (APIError, APIConnectionError, APITimeoutError):
-            # Fallback client — instantiate a new connection
-            try:
-                fallback_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-                response = fallback_client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.2,
-                    max_tokens=900,
-                )
-                return response.choices[0].message["content"].strip()
-            except:
-                if attempt < retries - 1:
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-                return "AI service is temporarily unavailable. Please try again."
-
-        except Exception as e:
-            return f"AI Error: {str(e)}"
-
-    return "The AI could not respond. Please try again."
-
+def ask_gpt(prompt, system="You are a Cayman workforce analyst."):
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=900,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"AI Error: {e}"
 
 ###############################################################
 #  DATABASE
