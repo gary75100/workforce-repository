@@ -29,24 +29,26 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 
 ###############################################################
-#  GPT ENGINE — ENTERPRISE SAFE
+#  GPT ENGINE — DEMO-SAFE + RATE-LIMIT IMMUNE
 ###############################################################
 
 from openai import OpenAI
 from openai import APIError, APIConnectionError, APITimeoutError, RateLimitError
 import time
 
+PRIMARY_MODEL = "gpt-4o"
+FALLBACK_MODEL = "gpt-4o-mini"  # MUCH higher rate limits
+
 def ask_gpt(
     prompt,
     system="You are a Cayman labour market analyst. Provide precise, executive-level insights based on the data."
 ):
     """
-    Enterprise-safe GPT caller with:
-    - Retry logic with exponential backoff
-    - Graceful rate-limit handling
-    - Fallback client recovery
-    - Clean, predictable output
-    - No exceptions propagate to UI
+    DEMO-SAFE GPT caller with:
+    - automatic fallback to gpt-4o-mini on ANY rate limit
+    - exponential backoff
+    - full error masking so the UI never crashes
+    - guaranteed output even if OpenAI is unstable
     """
 
     retries = 4
@@ -54,8 +56,9 @@ def ask_gpt(
 
     for attempt in range(retries):
         try:
+            # Primary model
             response = client.chat.completions.create(
-                model=MODEL_NAME,
+                model=PRIMARY_MODEL,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt}
@@ -63,24 +66,13 @@ def ask_gpt(
                 temperature=0.2,
                 max_tokens=900,
             )
-
-            # Correct OpenAI v1 SDK access
             return response.choices[0].message.content.strip()
 
         except RateLimitError:
-            # === RATE LIMIT HANDLING (your problem from this morning) ===
-            if attempt < retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            return "⚠️ AI is temporarily rate-limited. Please retry in a moment."
-
-        except (APIError, APIConnectionError, APITimeoutError):
-            # === FALLBACK CLIENT RECOVERY ===
+            # === AUTOMATIC FALLBACK TO 4o-MINI ===
             try:
-                fallback = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-                response = fallback.chat.completions.create(
-                    model=MODEL_NAME,
+                response = client.chat.completions.create(
+                    model=FALLBACK_MODEL,
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": prompt}
@@ -89,21 +81,40 @@ def ask_gpt(
                     max_tokens=900,
                 )
                 return response.choices[0].message.content.strip()
-            except:
-                pass
+            except Exception:
+                if attempt < retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return "⚠️ AI temporarily rate-limited. Please retry in a moment."
 
-            if attempt < retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-
-            return "⚠️ AI Error: Unable to contact OpenAI."
+        except (APIError, APIConnectionError, APITimeoutError):
+            # === CONNECTION / SERVER ERRORS ===
+            try:
+                fallback = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                response = fallback.chat.completions.create(
+                    model=FALLBACK_MODEL,  # fallback to mini for reliability
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=900,
+                )
+                return response.choices[0].message.content.strip()
+            except Exception:
+                if attempt < retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return "⚠️ AI Error: Unable to contact OpenAI."
 
         except Exception as e:
-            # === CATCH-ALL PROTECTION ===
+            # === ANY OTHER ERROR — SAFE OUTPUT ===
             return f"⚠️ AI Error: {str(e)}"
 
     return "⚠️ AI Error: Fatal failure."
+
 
 ###############################################################
 #  DATABASE SETUP
