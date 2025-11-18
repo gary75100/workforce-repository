@@ -38,7 +38,11 @@ def render_analytics_response(
     st.subheader("Chart")
 
     if chart_type == "auto":
-        # Pick x-axis
+        # Ensure salary columns remain numeric for charting
+        for col in df.columns:
+            if "salary" in col.lower():
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+         # Pick x-axis
         if "year_month" in df.columns:
             x_col = "year_month"
         elif "posted_date" in df.columns:
