@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+from app import ask_gpt
 
 from formatting import format_ci_currency, format_int
 
@@ -91,7 +92,7 @@ Data (first 100 records):
 
     # Use your existing GPT client wrapper here; this call is just illustrative
     try:
-        response = gpt_client.generate_text(prompt)  # adapt to your actual method
+        response = ask_gpt(prompt) # adapt to your actual method
         summary_text = response.strip()
     except Exception as e:
         summary_text = f"Unable to generate AI summary: {e}"
