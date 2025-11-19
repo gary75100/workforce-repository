@@ -579,13 +579,16 @@ if selected_tab == "SPS":
         st.markdown("### SPS Answer")
         st.write(answer)
 # ============================================================
-# JOB POSTINGS EXPLORER — FIXED
+# JOB POSTINGS EXPLORER — FULL REWRITE (Aligned With Design)
 # ============================================================
 
 if selected_tab == "Job Postings Explorer":
 
     st.title("Job Postings Explorer")
 
+    # ------------------------------------------------------------
+    # LOAD DATA (Clean Table)
+    # ------------------------------------------------------------
     df = run_sql(f"""
         SELECT 
             posting_date_clean,
@@ -599,19 +602,48 @@ if selected_tab == "Job Postings Explorer":
             experience_bucket,
             fixed_is_tech_job
         FROM {TABLE_JOB_POSTINGS}
+        WHERE posting_date_clean IS NOT NULL
         ORDER BY posting_date_clean DESC
-        LIMIT 2000
     """)
 
     if df.empty:
         st.error("No job posting data available.")
         st.stop()
 
-    # Filters
+    # ------------------------------------------------------------
+    # TIME RANGE SELECTOR (UX requirement)
+    # ------------------------------------------------------------
+    st.subheader("Time Range")
+
+    range_choice = st.radio(
+        "Select timeframe:",
+        ["Last 30 days", "Last 90 days", "Last 180 days", "Last 12 months", "All Time"],
+        horizontal=True
+    )
+
+    today = pd.to_datetime(df["posting_date_clean"]).max()
+
+    if range_choice == "Last 30 days":
+        df = df[df["posting_date_clean"] >= today - pd.Timedelta(days=30)]
+    elif range_choice == "Last 90 days":
+        df = df[df["posting_date_clean"] >= today - pd.Timedelta(days=90)]
+    elif range_choice == "Last 180 days":
+        df = df[df["posting_date_clean"] >= today - pd.Timedelta(days=180)]
+    elif range_choice == "Last 12 months":
+        df = df[df["posting_date_clean"] >= today - pd.Timedelta(days=365)]
+    else:
+        pass  # All Time
+
+    # ------------------------------------------------------------
+    # FILTERS
+    # ------------------------------------------------------------
     with st.expander("Filters"):
-        selected_industry = st.selectbox("Industry", ["All"] + sorted(df["industry"].dropna().unique().tolist()))
-        selected_vertical = st.selectbox("Vertical Sector", ["All"] + sorted(df["industry_vertical"].dropna().unique().tolist()))
-        tech_filter = st.selectbox("Tech Jobs Only?", ["No", "Yes"])
+        industry_opt = ["All"] + sorted(df["industry"].dropna().unique())
+        vertical_opt = ["All"] + sorted(df["industry_vertical"].dropna().unique())
+
+        selected_industry = st.selectbox("Industry (WORC)", industry_opt)
+        selected_vertical = st.selectbox("Vertical Sector (Group)", vertical_opt)
+        tech_only = st.selectbox("ICT Roles Only?", ["No", "Yes"])
 
     filtered = df.copy()
 
@@ -621,24 +653,111 @@ if selected_tab == "Job Postings Explorer":
     if selected_vertical != "All":
         filtered = filtered[filtered["industry_vertical"] == selected_vertical]
 
-    if tech_filter == "Yes":
+    if tech_only == "Yes":
         filtered = filtered[filtered["fixed_is_tech_job"] == True]
 
-    st.subheader(f"Showing {len(filtered)} job postings")
-    st.dataframe(filtered.head(200))
+    # ------------------------------------------------------------
+    # KEY METRICS (Aligned with your design)
+    # ------------------------------------------------------------
+    st.subheader(f"Showing {len(filtered):,} job postings")
 
-    # Summary KPIs
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Avg Salary", fmt_ci_dec(filtered["salary_avg"].mean()))
-    col2.metric("Tech %", f"{(filtered['fixed_is_tech_job'].mean()*100):.1f}%")
+    col2.metric("ICT Role %", f"{(filtered['fixed_is_tech_job'].mean() * 100):.1f}%")
     col3.metric("Industries", filtered["industry"].nunique())
+    col4.metric("Vertical Sectors", filtered["industry_vertical"].nunique())
 
-    # Chart
-    st.subheader("Postings by Month")
+    # ------------------------------------------------------------
+    # DATA PREVIEW
+    # ------------------------------------------------------------
+    st.dataframe(filtered.head(250))
+
+    # ------------------------------------------------------------
+    # MONTHLY TREND (Newest-first)
+    # ------------------------------------------------------------
+    st.subheader("Job Posting Volume Over Time")
+
     df_month = run_sql(f"""
         SELECT year_month, COUNT(*) AS postings
         FROM {TABLE_JOB_POSTINGS}
+        WHERE posting_date_clean IS NOT NULL
         GROUP BY year_month
         ORDER BY year_month
     """)
-    line_chart(df_month, "year_month", "postings", "Job Posting Volume Over Time")
+
+    if not df_month.empty:
+        line_chart(df_month, "year_month", "postings", "Job Posting Volume")
+    else:
+        st.info("No monthly trend data available.")
+
+    # ------------------------------------------------------------
+    # WORC: ICT Analytics (THE EMAIL REQUIREMENT)
+    # ------------------------------------------------------------
+    st.subheader("ICT Analysis (Tech Futures Week Requirements)")
+
+    # ICT = fixed_is_tech_job = TRUE
+    df_ict = df[df["fixed_is_tech_job"] == True]
+
+    def count_by_range(start_year, end_year):
+        return run_sql(f"""
+            SELECT COUNT(*) AS ict_roles
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE fixed_is_tech_job = TRUE
+              AND posting_date_clean >= DATE '{start_year}-10-01'
+              AND posting_date_clean < DATE '{end_year}-10-01'
+        """)["ict_roles"][0]
+
+    # Define year windows explicitly
+    ranges = [
+        ("Oct 2024 – Oct 2025", 2024, 2025),
+        ("Oct 2023 – Oct 2024", 2023, 2024),
+        ("Oct 2022 – Oct 2023", 2022, 2023),
+        ("Oct 2021 – Oct 2022", 2021, 2022)
+    ]
+
+    ict_counts = []
+    for label, start, end in ranges:
+        count = count_by_range(start, end)
+        ict_counts.append((label, count))
+
+    df_ict_years = pd.DataFrame(ict_counts, columns=["Period", "ICT Roles"])
+    st.dataframe(df_ict_years)
+
+    # ICT entry & mid-level
+    df_entry = run_sql(f"""
+        SELECT COUNT(*) AS entry_count
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE fixed_is_tech_job = TRUE
+          AND experience_bucket = 'entry'
+          AND posting_date_clean >= DATE '2024-10-01'
+    """)
+
+    df_mid = run_sql(f"""
+        SELECT COUNT(*) AS mid_count
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE fixed_is_tech_job = TRUE
+          AND experience_bucket = 'mid'
+          AND posting_date_clean >= DATE '2024-10-01'
+    """)
+
+    st.metric("ICT Entry-Level (1–2 yrs)", fmt_int(df_entry["entry_count"][0]))
+    st.metric("ICT Mid-Level (3–4 yrs)", fmt_int(df_mid["mid_count"][0]))
+
+    # ------------------------------------------------------------
+    # AI SUMMARY (WORC NEED)
+    # ------------------------------------------------------------
+    if st.button("Generate AI Summary of ICT Trends"):
+        prompt = f"""
+        Provide an executive-grade analysis of Cayman ICT job postings.
+
+        Timeframe: {range_choice}
+
+        ICT Year Counts:
+        {df_ict_years.to_string(index=False)}
+
+        Entry-level ICT (1–2 yrs): {df_entry['entry_count'][0]}
+        Mid-level ICT (3–4 yrs): {df_mid['mid_count'][0]}
+
+        Only use the data provided. Be concise, analytical, and insightful.
+        """
+        st.write(ask_gpt(prompt))
