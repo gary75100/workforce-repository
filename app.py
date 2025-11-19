@@ -237,39 +237,46 @@ if selected_tab == "Ask Anything":
     # ------------------------
     # INTENT ROUTE: HIGHEST SALARY
     # ------------------------
-    elif intent == "high_salary":
-        df = run_sql(f"""
-            SELECT year, MAX(salary_avg) AS max_salary
-            FROM {TABLE_JOB_POSTINGS}
-            WHERE salary_avg IS NOT NULL
-            GROUP BY year
-            ORDER BY year
-        """)
+    if intent == "high_salary":
+    df = run_sql(f"""
+        SELECT 
+            year,
+            MAX((salary_min + salary_max) / 2) AS max_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
+        GROUP BY year
+        ORDER BY year
+    """)
         show_results(df, "line", "year", "max_salary", "Highest Tech Salaries by Year")
 
     # ------------------------
     # INTENT ROUTE: LOWEST SALARY
     # ------------------------
     elif intent == "low_salary":
-        df = run_sql(f"""
-            SELECT year, MIN(salary_avg) AS min_salary
-            FROM {TABLE_JOB_POSTINGS}
-            WHERE salary_avg IS NOT NULL
-            GROUP BY year
-            ORDER BY year
-        """)
+    df = run_sql(f"""
+        SELECT 
+            year,
+            MIN((salary_min + salary_max) / 2) AS min_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
+        GROUP BY year
+        ORDER BY year
+    """)
         show_results(df, "line", "year", "min_salary", "Lowest Tech Salaries by Year")
 
     # ------------------------
     # INTENT ROUTE: AVERAGE SALARY
     # ------------------------
     elif intent == "avg_salary":
-        df = run_sql(f"""
-            SELECT year, AVG(salary_avg) AS avg_salary
-            FROM {TABLE_JOB_POSTINGS}
-            GROUP BY year
-            ORDER BY year
-        """)
+    df = run_sql(f"""
+        SELECT 
+            year,
+            AVG((salary_min + salary_max) / 2) AS avg_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
+        GROUP BY year
+        ORDER BY year
+    """)
         show_results(df, "line", "year", "avg_salary", "Average Tech Salaries by Year")
 
     # ------------------------
@@ -602,7 +609,7 @@ if selected_tab == "Job Postings Explorer":
             industry_vertical,
             salary_min,
             salary_max,
-            salary_avg,
+            COALESCE((salary_min + salary_max) / 2, NULL) AS salary_avg,
             experience_bucket,
             fixed_is_tech_job
         FROM {TABLE_JOB_POSTINGS}
@@ -674,7 +681,10 @@ if selected_tab == "Job Postings Explorer":
     st.subheader(f"Showing {len(filtered):,} job postings")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Avg Salary", fmt_ci_dec(filtered["salary_avg"].mean()))
+    col1.metric(
+    "Avg Salary",
+    fmt_ci_dec(((filtered["salary_min"] + filtered["salary_max"]) / 2).mean())
+)
     col2.metric("ICT Role %", f"{(filtered['fixed_is_tech_job'].mean() * 100):.1f}%")
     col3.metric("Industries", filtered["industry"].nunique())
     col4.metric("Vertical Sectors", filtered["industry_vertical"].nunique())
