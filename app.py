@@ -154,7 +154,7 @@ def ask_gpt(prompt, model="gpt-4o-mini"):
         )
 
         # FIXED: Extract the text safely
-        return response.choices[0].message["content"].strip()
+        return response.choices[0].message.content.strip()
 
     except Exception as e:
         return f"GPT Error: {str(e)}"
