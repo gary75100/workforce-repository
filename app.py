@@ -638,11 +638,13 @@ if selected_tab == "SPS":
 if selected_tab == "Job Postings Explorer":
 
     st.title("Job Postings Explorer")
-# ===========================
-# HOW TO USE THIS EXPLORER (HELP PANEL)
-# ===========================
-with st.expander("📘 How to Use the Job Postings Explorer"):
-    st.markdown("""
+    st.write("")  # spacing
+
+    # ===========================
+    # HOW TO USE (EXPANDER) — FIXED
+    # ===========================
+    with st.expander("📘 How to Use the Job Postings Explorer", expanded=False):
+        st.markdown("""
 ### **How to Use This Dashboard (WORC Staff Guide)**
 
 **1. Start with the Time Range filter.**  
@@ -655,29 +657,28 @@ to narrow the analysis to specific sectors or ICT roles.
 (Posts, Avg Salary, ICT %, Industries) for a high-level summary.
 
 **4. Explore the Job Table**  
-which shows the most recent job postings matching the filters.
+showing the most recent job postings matching the filters.
 
 **5. Posting Trend Chart**  
-reveals monthly hiring patterns and seasonality.
+visualizes activity month-by-month.
 
 **6. ICT Analysis**  
 To answer WORC's year-over-year questions:  
 👉 Set **Time Range = All Time**  
 Then scroll to the **ICT Analysis** section to view:  
 - ICT roles per Oct-Oct window  
-- Entry-level (1–2 yrs) ICT roles  
-- Mid-level (3–4 yrs) ICT roles  
-- Senior (5+ yrs) ICT roles
+- ICT entry-level (1–2 yrs)  
+- ICT mid-level (3–4 yrs)  
+- ICT senior roles (5+ yrs)
 
 **7. Top Employers & Top Job Titles**  
-show who is hiring and which jobs are most in demand.
+show hiring concentration and demand patterns.
 
 **8. Ask AI About These Jobs**  
-Type a question in natural language and AI will summarize insights  
-*based only on the filtered dataset you are viewing*.
+Ask any question in natural language — AI will summarize the trends based only on the filtered dataset.
 
 ---
-""")
+        """)
 
     # Load data
     df = run_sql(f"""
