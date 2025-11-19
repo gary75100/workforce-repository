@@ -765,13 +765,27 @@ if selected_tab == "Job Postings Explorer":
     st.dataframe(top_titles)
 
     # ===========================
-    # SALARY HISTOGRAM
+    # SALARY HISTOGRAM (FIXED)
     # ===========================
-    st.markdown("<h4 class='section-header'>Salary Distribution</h4>", unsafe_allow_html=True)
-
+    st.markdown("### Salary Distribution")
+    
     hist_df = filtered[filtered["salary_avg"].notna()]
     if not hist_df.empty:
-        fig = px.histogram(hist_df, x="salary_avg", nbins=20, title="Salary Distribution")
+        fig = px.histogram(
+            hist_df,
+            x="salary_avg",
+            nbins=25,
+            title="Salary Distribution",
+        )
+    
+        fig.update_layout(
+            xaxis_title="Average Salary (CI$)",
+            yaxis_title="Number of Postings",
+            bargap=0.05,
+        )
+    
+        fig.update_xaxes(tickformat=",")
+    
         st.plotly_chart(fig, use_container_width=True)
 
     # ===========================
