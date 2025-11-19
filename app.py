@@ -116,33 +116,35 @@ else:
 
 MODEL = "gpt-4o-mini"  # fast, cheap, accurate
 
-def ask_gpt(prompt: str) -> str:
+def ask_gpt(prompt, model="gpt-4o-mini"):
     """
-    Safely call OpenAI with retry logic and deterministic prompting.
+    Safe, reliable GPT wrapper for the Workforce Intelligence Assistant.
+    Works with all 'Ask AI' sections across the app.
     """
-    for attempt in range(3):
-        try:
-            response = openai.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the Cayman Workforce Intelligence Assistant. "
-                            "Use ONLY the data provided via SQL queries. "
-                            "Never hallucinate data. "
-                            "Be concise, factual, and analytical, suitable for senior government officials."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-            )
-            return response.choices[0].message["content"]
-        except Exception as e:
-            if attempt == 2:
-                return f"GPT Error: {e}"
-            time.sleep(1)
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert Cayman Islands labor market analyst. "
+                        "Be concise, factual, and always base your answer strictly "
+                        "on the data provided. Never hallucinate missing values."
+                    )
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2  # stable, deterministic output
+        )
+
+        # FIXED: Extract the text safely
+        return response.choices[0].message["content"].strip()
+
+    except Exception as e:
+        return f"GPT Error: {str(e)}"
+
 
 # ------------------------------------------------------------
 #  REUSABLE CHART BUILDERS
