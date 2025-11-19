@@ -1,4 +1,3 @@
-
 import os
 import requests
 import streamlit as st
@@ -12,17 +11,21 @@ def ensure_database() -> str:
 
     db_path = Path("database") / "workforce.db"
 
-    # If DB already exists, use it
+    # If DB already exists locally, use it
     if db_path.exists():
         return str(db_path)
 
-    # Must have DB_URL in Streamlit secrets
+    # If the DB does not exist locally, we MUST download it
     if "DB_URL" not in st.secrets:
-        st.error("DB_URL missing from Streamlit secrets.")
-        raise ValueError("DB_URL missing from Streamlit secrets.")
+        st.error(
+            "DB_URL is not set in Streamlit secrets. "
+            "Please add:  DB_URL: <link-to-github-release-database>"
+        )
+        raise ValueError("Missing DB_URL in Streamlit secrets.")
 
     url = st.secrets["DB_URL"]
-    st.info(f"Downloading workforce.db from GitHub Release…")
+
+    st.info("Downloading workforce database from GitHub Release…")
 
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -40,7 +43,7 @@ def ensure_database() -> str:
                         f.write(chunk)
 
     except Exception as e:
-        st.error(f"Failed to download workforce.db: {e}")
+        st.error(f"Error downloading workforce.db: {e}")
         raise
 
     st.success("Database downloaded successfully.")
