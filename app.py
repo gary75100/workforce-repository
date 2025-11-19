@@ -147,7 +147,7 @@ TABLE_SPS = "fact_sps_text"
 
 # Placeholder — next steps will define a function for each tab.
 # ============================================================
-# STEP 2 — ASK ANYTHING (Intents + Analyst Queries)
+# FIXED — ASK ANYTHING (Postings + Analyst Queries)
 # ============================================================
 
 if selected_tab == "Ask Anything":
@@ -155,236 +155,142 @@ if selected_tab == "Ask Anything":
     st.title("Ask Anything")
 
     user_q = st.text_input(
-        "Ask a workforce, job, labour, wage, or policy question:",
-        placeholder="e.g., Which employers posted the most tech jobs?"
+        "Ask a workforce or labour market question:",
+        placeholder="e.g., Which employers posted the most tech jobs recently?"
     )
 
-    st.markdown("---")
-
     if not user_q:
-        st.info("Enter a question above to begin.")
         st.stop()
 
-    # ------------------------------------------------------------
-    # INTENT CLASSIFICATION (7 guaranteed intents)
-    # ------------------------------------------------------------
-    def classify_intent(q: str) -> str:
+    # ------------------------
+    # INTENT DETECTION
+    # ------------------------
+    def classify(q):
         ql = q.lower()
+        if "most tech" in ql: return "top_tech"
+        if "least tech" in ql: return "bottom_tech"
+        if "entry" in ql and "tech" in ql: return "entry_tech"
+        if "highest" in ql and "salary" in ql: return "high_salary"
+        if "lowest" in ql and "salary" in ql: return "low_salary"
+        if "average" in ql and "salary" in ql: return "avg_salary"
+        if "trend" in ql and "salary" in ql: return "salary_trend"
+        return "general"
 
-        if "most tech" in ql or "top tech" in ql:
-            return "employer_most_tech"
-        if "least tech" in ql:
-            return "employer_least_tech"
-        if "entry" in ql and "tech" in ql:
-            return "entry_level_tech"
-        if "highest" in ql and "salary" in ql:
-            return "highest_salary"
-        if "lowest" in ql and "salary" in ql:
-            return "lowest_salary"
-        if "average" in ql and "salary" in ql:
-            return "average_salary"
-        if "trend" in ql and "salary" in ql:
-            return "salary_trend"
+    intent = classify(user_q)
 
-        return "general_query"
-
-    intent = classify_intent(user_q)
-    st.write(f"**Detected intent:** `{intent}`")
-
-    # ------------------------------------------------------------
-    # INTENT HANDLERS
-    # ------------------------------------------------------------
-
-    # 1. EMPLOYER MOST TECH ROLES
-    if intent == "employer_most_tech":
-        sql = f"""
-        SELECT employer_name, COUNT(*) AS tech_roles
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        GROUP BY employer_name
-        ORDER BY tech_roles DESC
-        LIMIT 10
-        """
-        df = run_sql(sql)
-
-        st.subheader("Top Employers for Tech Roles")
+    # ------------------------
+    # QUERY HELPERS
+    # ------------------------
+    def show_results(df, chart_type=None, x=None, y=None, title=None):
         st.dataframe(df)
-
-        bar_chart(df, "employer_name", "tech_roles", "Employers Posting the Most Tech Roles")
-
-        summary = ask_gpt(
-            f"Question: {user_q}\n\nData:\n{df.to_string()}\n\n"
-            "Write an executive summary using only this data."
-        )
+        if chart_type == "bar":
+            bar_chart(df, x, y, title)
+        if chart_type == "line":
+            line_chart(df, x, y, title)
+        summary = ask_gpt(f"User question: {user_q}\nData:\n{df.to_string()}\nProvide an executive summary.")
         st.markdown("### AI Summary")
         st.write(summary)
-        st.stop()
 
-    # 2. EMPLOYER LEAST TECH ROLES
-    if intent == "employer_least_tech":
-        sql = f"""
-        SELECT employer_name, COUNT(*) AS tech_roles
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        GROUP BY employer_name
-        ORDER BY tech_roles ASC
-        LIMIT 10
-        """
-        df = run_sql(sql)
+    # ------------------------
+    # INTENT ROUTE: MOST TECH
+    # ------------------------
+    if intent == "top_tech":
+        df = run_sql(f"""
+            SELECT employer_name, COUNT(*) AS tech_roles
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE fixed_is_tech_job = TRUE
+            GROUP BY employer_name
+            ORDER BY tech_roles DESC
+            LIMIT 15
+        """)
+        show_results(df, "bar", "employer_name", "tech_roles", "Top Tech Employers (Recent)")
 
-        st.subheader("Employers Posting the Fewest Tech Roles")
-        st.dataframe(df)
+    # ------------------------
+    # INTENT ROUTE: LEAST TECH
+    # ------------------------
+    elif intent == "bottom_tech":
+        df = run_sql(f"""
+            SELECT employer_name, COUNT(*) AS tech_roles
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE fixed_is_tech_job = TRUE
+            GROUP BY employer_name
+            HAVING tech_roles > 0
+            ORDER BY tech_roles ASC
+            LIMIT 15
+        """)
+        show_results(df, "bar", "employer_name", "tech_roles", "Employers With Fewest Tech Roles")
 
-        bar_chart(df, "employer_name", "tech_roles", "Employers Posting the Fewest Tech Roles")
+    # ------------------------
+    # INTENT ROUTE: ENTRY TECH
+    # ------------------------
+    elif intent == "entry_tech":
+        df = run_sql(f"""
+            SELECT job_title, employer_name, salary_avg
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE fixed_is_tech_job = TRUE
+              AND experience_bucket = 'entry'
+            ORDER BY posting_date_clean DESC
+            LIMIT 50
+        """)
+        show_results(df)
 
-        summary = ask_gpt(
-            f"Question: {user_q}\n\nData:\n{df.to_string()}\n\n"
-            "Write an executive summary using only this data."
-        )
-        st.markdown("### AI Summary")
-        st.write(summary)
-        st.stop()
+    # ------------------------
+    # INTENT ROUTE: HIGHEST SALARY
+    # ------------------------
+    elif intent == "high_salary":
+        df = run_sql(f"""
+            SELECT year, MAX(salary_avg) AS max_salary
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE salary_avg IS NOT NULL
+            GROUP BY year
+            ORDER BY year
+        """)
+        show_results(df, "line", "year", "max_salary", "Highest Tech Salaries by Year")
 
-    # 3. ENTRY-LEVEL TECH ROLES
-    if intent == "entry_level_tech":
-        sql = f"""
-        SELECT job_title, employer_name, experience_bucket, salary_min, salary_max
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        AND experience_bucket = 'entry'
-        LIMIT 50
-        """
-        df = run_sql(sql)
+    # ------------------------
+    # INTENT ROUTE: LOWEST SALARY
+    # ------------------------
+    elif intent == "low_salary":
+        df = run_sql(f"""
+            SELECT year, MIN(salary_avg) AS min_salary
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE salary_avg IS NOT NULL
+            GROUP BY year
+            ORDER BY year
+        """)
+        show_results(df, "line", "year", "min_salary", "Lowest Tech Salaries by Year")
 
-        st.subheader("Entry-Level Tech Roles")
-        st.dataframe(df)
+    # ------------------------
+    # INTENT ROUTE: AVERAGE SALARY
+    # ------------------------
+    elif intent == "avg_salary":
+        df = run_sql(f"""
+            SELECT year, AVG(salary_avg) AS avg_salary
+            FROM {TABLE_JOB_POSTINGS}
+            GROUP BY year
+            ORDER BY year
+        """)
+        show_results(df, "line", "year", "avg_salary", "Average Tech Salaries by Year")
 
-        summary = ask_gpt(
-            f"Question: {user_q}\n\nData:\n{df.to_string()}\n\n"
-            "Write an executive summary focusing on entry-level tech roles."
-        )
-        st.markdown("### AI Summary")
-        st.write(summary)
-        st.stop()
+    # ------------------------
+    # INTENT ROUTE: SALARY TREND
+    # ------------------------
+    elif intent == "salary_trend":
+        df = run_sql(f"""
+            SELECT year_month, AVG(salary_avg) AS avg_salary
+            FROM {TABLE_JOB_POSTINGS}
+            GROUP BY year_month
+            ORDER BY year_month
+        """)
+        show_results(df, "line", "year_month", "avg_salary", "Salary Trend Over Time")
 
-    # 4. HIGHEST TECH SALARY
-    if intent == "highest_salary":
-        sql = f"""
-        SELECT year, MAX(salary_avg) AS highest_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        GROUP BY year
-        ORDER BY year
-        """
-        df = run_sql(sql)
+    # ------------------------
+    # DEFAULT: GENERAL ROUTE
+    # ------------------------
+    else:
+        df = run_sql(f"SELECT * FROM {TABLE_JOB_POSTINGS} ORDER BY posting_date_clean DESC LIMIT 50")
+        show_results(df)
 
-        st.subheader("Highest Tech Salary by Year")
-        st.dataframe(df)
-
-        line_chart(df, "year", "highest_salary", "Highest Tech Salary by Year")
-
-        summary = ask_gpt(
-            f"User question: {user_q}\nData:\n{df.to_string()}\n"
-            "Write a concise executive-level summary."
-        )
-        st.markdown("### AI Summary")
-        st.write(summary)
-        st.stop()
-
-    # 5. LOWEST TECH SALARY
-    if intent == "lowest_salary":
-        sql = f"""
-        SELECT year, MIN(salary_avg) AS lowest_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        GROUP BY year
-        ORDER BY year
-        """
-        df = run_sql(sql)
-
-        st.subheader("Lowest Tech Salary by Year")
-        st.dataframe(df)
-
-        line_chart(df, "year", "lowest_salary", "Lowest Tech Salary by Year")
-
-        summary = ask_gpt(
-            f"User question: {user_q}\nData:\n{df.to_string()}\n"
-            "Write an executive-level summary."
-        )
-        st.markdown("### AI Summary")
-        st.write(summary)
-        st.stop()
-
-    # 6. AVERAGE TECH SALARY
-    if intent == "average_salary":
-        sql = f"""
-        SELECT year, AVG(salary_avg) AS avg_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        GROUP BY year
-        ORDER BY year
-        """
-        df = run_sql(sql)
-
-        st.subheader("Average Tech Salary by Year")
-        st.dataframe(df)
-
-        line_chart(df, "year", "avg_salary", "Average Tech Salary by Year")
-
-        summary = ask_gpt(
-            f"User question: {user_q}\nData:\n{df.to_string()}\n"
-            "Write an executive-level summary describing trends."
-        )
-        st.markdown("### AI Summary")
-        st.write(summary)
-        st.stop()
-
-    # 7. TECH SALARY TREND
-    if intent == "salary_trend":
-        sql = f"""
-        SELECT year_month, AVG(salary_avg) AS avg_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE is_tech_job = TRUE
-        GROUP BY year_month
-        ORDER BY year_month
-        """
-        df = run_sql(sql)
-
-        st.subheader("Tech Salary Trend Over Time")
-        st.dataframe(df)
-
-        line_chart(df, "year_month", "avg_salary", "Tech Salary Trend")
-
-        summary = ask_gpt(
-            f"User question: {user_q}\nData:\n{df.to_string()}\n"
-            "Write an executive summary focused on salary trends."
-        )
-        st.markdown("### AI Summary")
-        st.write(summary)
-        st.stop()
-
-    # ------------------------------------------------------------
-    # GENERAL ANALYST-GRADE QUERY
-    # ------------------------------------------------------------
-    st.subheader("Analytical Output")
-
-    # Show sample SQL (NOT raw)
-    sample_sql = f"SELECT * FROM {TABLE_JOB_POSTINGS} LIMIT 25;"
-    df_sample = run_sql(sample_sql)
-    st.write(df_sample)
-
-    prompt = f"""
-    User question: {user_q}
-
-    Here is a sample of the Cayman workforce dataset (job postings enriched):
-
-    {df_sample.to_string()}
-
-    Provide a concise, accurate, executive-level analysis grounded ONLY in the data shown.
-    """
-
-    answer = ask_gpt(prompt)
-    st.write(answer)
 # ============================================================
 # STEP 3 — LABOUR FORCE SURVEY (LFS) TAB
 # ============================================================
@@ -672,3 +578,67 @@ if selected_tab == "SPS":
 
         st.markdown("### SPS Answer")
         st.write(answer)
+# ============================================================
+# JOB POSTINGS EXPLORER — FIXED
+# ============================================================
+
+if selected_tab == "Job Postings Explorer":
+
+    st.title("Job Postings Explorer")
+
+    df = run_sql(f"""
+        SELECT 
+            posting_date_clean,
+            employer_name,
+            job_title,
+            industry,
+            industry_vertical,
+            salary_min,
+            salary_max,
+            salary_avg,
+            experience_bucket,
+            fixed_is_tech_job
+        FROM {TABLE_JOB_POSTINGS}
+        ORDER BY posting_date_clean DESC
+        LIMIT 2000
+    """)
+
+    if df.empty:
+        st.error("No job posting data available.")
+        st.stop()
+
+    # Filters
+    with st.expander("Filters"):
+        selected_industry = st.selectbox("Industry", ["All"] + sorted(df["industry"].dropna().unique().tolist()))
+        selected_vertical = st.selectbox("Vertical Sector", ["All"] + sorted(df["industry_vertical"].dropna().unique().tolist()))
+        tech_filter = st.selectbox("Tech Jobs Only?", ["No", "Yes"])
+
+    filtered = df.copy()
+
+    if selected_industry != "All":
+        filtered = filtered[filtered["industry"] == selected_industry]
+
+    if selected_vertical != "All":
+        filtered = filtered[filtered["industry_vertical"] == selected_vertical]
+
+    if tech_filter == "Yes":
+        filtered = filtered[filtered["fixed_is_tech_job"] == True]
+
+    st.subheader(f"Showing {len(filtered)} job postings")
+    st.dataframe(filtered.head(200))
+
+    # Summary KPIs
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Avg Salary", fmt_ci_dec(filtered["salary_avg"].mean()))
+    col2.metric("Tech %", f"{(filtered['fixed_is_tech_job'].mean()*100):.1f}%")
+    col3.metric("Industries", filtered["industry"].nunique())
+
+    # Chart
+    st.subheader("Postings by Month")
+    df_month = run_sql(f"""
+        SELECT year_month, COUNT(*) AS postings
+        FROM {TABLE_JOB_POSTINGS}
+        GROUP BY year_month
+        ORDER BY year_month
+    """)
+    line_chart(df_month, "year_month", "postings", "Job Posting Volume Over Time")
