@@ -1,963 +1,674 @@
-###############################################################
-#  SECTION 1 — GLOBAL IMPORTS + CONFIG + GPT ENGINE + DB SETUP
-###############################################################
+# ============================================================
+#  CAYMAN WORKFORCE INTELLIGENCE ASSISTANT — CORE FRAMEWORK
+#  STEP 1 OF 5 — DO NOT MODIFY
+# ============================================================
 
 import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from pathlib import Path
+from typing import Any, Optional
 import time
-from datetime import datetime, timedelta
-from openai import OpenAI, RateLimitError, APIError, APIConnectionError, APITimeoutError
-from analytics_response import render_analytics_response
-from db_loader import ensure_database
+import openai
+import os
+import requests
+import json
 
-
-###############################################################
-#  STREAMLIT PAGE SETTINGS
-###############################################################
-
+# ------------------------------------------------------------
+#  STREAMLIT CONFIG
+# ------------------------------------------------------------
 st.set_page_config(
     page_title="Cayman Workforce Intelligence Assistant",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-MODEL_NAME = "gpt-4.1"
-
-# Global OpenAI client
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
-
-###############################################################
-#  GPT ENGINE — DEMO-SAFE + RATE-LIMIT IMMUNE
-###############################################################
-
-from openai import OpenAI
-from openai import APIError, APIConnectionError, APITimeoutError, RateLimitError
-import time
-
-PRIMARY_MODEL = "gpt-4o"
-FALLBACK_MODEL = "gpt-4o-mini"  # MUCH higher rate limits
-
-def ask_gpt(
-    prompt,
-    system="You are a Cayman labour market analyst. Provide precise, executive-level insights based on the data."
-):
+st.markdown(
     """
-    DEMO-SAFE GPT caller with:
-    - automatic fallback to gpt-4o-mini on ANY rate limit
-    - exponential backoff
-    - full error masking so the UI never crashes
-    - guaranteed output even if OpenAI is unstable
-    """
+    <style>
+    .block-container {padding-top: 1.5rem;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    retries = 4
-    delay = 1
+# ------------------------------------------------------------
+#  DATABASE LOADER (from db_loader.py)
+# ------------------------------------------------------------
+from db_loader import ensure_database
 
-    for attempt in range(retries):
-        try:
-            # Primary model
-            response = client.chat.completions.create(
-                model=PRIMARY_MODEL,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=900,
-            )
-            return response.choices[0].message.content.strip()
+DB_PATH = ensure_database()
+con = duckdb.connect(DB_PATH, read_only=True)
 
-        except RateLimitError:
-            # === AUTOMATIC FALLBACK TO 4o-MINI ===
-            try:
-                response = client.chat.completions.create(
-                    model=FALLBACK_MODEL,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.2,
-                    max_tokens=900,
-                )
-                return response.choices[0].message.content.strip()
-            except Exception:
-                if attempt < retries - 1:
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-                return "⚠️ AI temporarily rate-limited. Please retry in a moment."
-
-        except (APIError, APIConnectionError, APITimeoutError):
-            # === CONNECTION / SERVER ERRORS ===
-            try:
-                fallback = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-                response = fallback.chat.completions.create(
-                    model=FALLBACK_MODEL,  # fallback to mini for reliability
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.2,
-                    max_tokens=900,
-                )
-                return response.choices[0].message.content.strip()
-            except Exception:
-                if attempt < retries - 1:
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-                return "⚠️ AI Error: Unable to contact OpenAI."
-
-        except Exception as e:
-            # === ANY OTHER ERROR — SAFE OUTPUT ===
-            return f"⚠️ AI Error: {str(e)}"
-
-    return "⚠️ AI Error: Fatal failure."
-
-
-###############################################################
-#  DATABASE SETUP
-###############################################################
-
-db_path = ensure_database()
-conn = duckdb.connect(db_path, read_only=False)
-
+# ------------------------------------------------------------
+#  SQL RUNNER
+# ------------------------------------------------------------
 def run_sql(sql: str) -> pd.DataFrame:
     try:
-        return conn.execute(sql).df()
+        return con.execute(sql).fetchdf()
     except Exception as e:
         st.error(f"SQL Error: {e}")
         return pd.DataFrame()
 
-
-###############################################################
-#  CURRENCY FORMATTER
-###############################################################
-
-def fmt_currency(x):
-    """Format all numeric salaries as CI$ 12,345"""
-    if x is None or x == "" or pd.isna(x):
-        return "—"
+# ------------------------------------------------------------
+#  FORMATTERS
+# ------------------------------------------------------------
+def fmt_ci(value: Any) -> str:
     try:
-        return f"CI$ {x:,.0f}"
+        v = float(value)
+        return f"CI${v:,.0f}"
     except:
-        return "—"
-###############################################################
-#  SECTION 2 — INTENT CLASSIFIER + ROUTED QUESTIONS + CHAT TAB
-###############################################################
+        return value
 
-############################################
-# INTENT LABELS (Your 7 guaranteed questions)
-############################################
+def fmt_ci_dec(value: Any) -> str:
+    try:
+        v = float(value)
+        return f"CI${v:,.2f}"
+    except:
+        return value
 
-INTENT_LABELS = """
-- employer_most_tech_roles
-- employer_least_tech_roles
-- entry_level_tech_roles
-- highest_tech_salary_by_year
-- lowest_tech_salary_by_year
-- average_tech_salary_by_year
-- tech_salary_trend
-- general_question
-"""
+def fmt_int(value: Any) -> str:
+    try:
+        return f"{int(value):,}"
+    except:
+        return value
 
+# ------------------------------------------------------------
+#  GPT ENGINE — FULLY CONTROLLED (NO HALLUCINATIONS)
+# ------------------------------------------------------------
+if "OPENAI_API_KEY" in st.secrets:
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
+else:
+    st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+    st.stop()
 
-############################################
-# INTENT CLASSIFIER — GPT-4.1
-############################################
+MODEL = "gpt-4o-mini"  # fast, cheap, accurate
 
-def classify_intent(user_q: str) -> str:
-    prompt = f"""
-    Classify the user question into EXACTLY one of:
-
-    {INTENT_LABELS}
-
-    USER QUESTION:
-    "{user_q}"
-
-    Respond with ONLY the label, no explanation.
+def ask_gpt(prompt: str) -> str:
     """
+    Safely call OpenAI with retry logic and deterministic prompting.
+    """
+    for attempt in range(3):
+        try:
+            response = openai.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the Cayman Workforce Intelligence Assistant. "
+                            "Use ONLY the data provided via SQL queries. "
+                            "Never hallucinate data. "
+                            "Be concise, factual, and analytical, suitable for senior government officials."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+            )
+            return response.choices[0].message["content"]
+        except Exception as e:
+            if attempt == 2:
+                return f"GPT Error: {e}"
+            time.sleep(1)
 
-    intent = ask_gpt(prompt).strip().lower()
-
-    # Safety: normalize unexpected responses
-    if intent not in INTENT_LABELS:
-        return "general_question"
-    return intent
-
-
-############################################
-# RENDER HELPERS — tables + charts
-############################################
-
-def render_table(df, title=None):
-    if title:
-        st.subheader(title)
-    st.dataframe(df, use_container_width=True)
-
-
-def render_line(df, x, y, color=None, title=None):
-    fig = px.line(df, x=x, y=y, color=color, markers=True, title=title)
+# ------------------------------------------------------------
+#  REUSABLE CHART BUILDERS
+# ------------------------------------------------------------
+def line_chart(df: pd.DataFrame, x: str, y: str, title: str):
+    fig = px.line(df, x=x, y=y, markers=True)
+    fig.update_layout(title=title, height=400)
     st.plotly_chart(fig, use_container_width=True)
 
+def bar_chart(df: pd.DataFrame, x: str, y: str, title: str):
+    fig = px.bar(df, x=x, y=y)
+    fig.update_layout(title=title, height=400)
+    st.plotly_chart(fig, use_container_width=True)
 
-############################################
-# 7 GUARANTEED QUESTIONS — SQL HANDLERS
-############################################
+# ------------------------------------------------------------
+#  PAGE NAVIGATION
+# ------------------------------------------------------------
+TABS = ["Ask Anything", "Labour Force Survey", "Wages (OWS)", "SPS", "Job Postings Explorer"]
 
-def answer_employer_most_tech():
-    sql = """
-        SELECT employer_name, COUNT(*) AS tech_roles
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE
-        GROUP BY employer_name
-        ORDER BY tech_roles DESC
-        LIMIT 1;
-    """
-    df = run_sql(sql)
-    render_table(df, "Employer With Most Tech Roles")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Interpret this result:\n{df.to_json()}"))
+selected_tab = st.sidebar.radio("Navigation", TABS)
 
+# ------------------------------------------------------------
+#  SHARED DATA REFERENCES
+#  These are the NEW tables loaded from your ETL pipeline.
+# ------------------------------------------------------------
+TABLE_JOB_POSTINGS = "fact_job_postings_enriched"
+TABLE_LFS_OVERVIEW = "fact_lfs_overview"
+TABLE_LFS_INDUSTRY = "fact_lfs_industry"
+TABLE_LFS_OCC = "fact_lfs_occupation"  # may not exist
+TABLE_WAGES = "fact_wages_2023"
+TABLE_SPS = "fact_sps_text"
 
-def answer_employer_least_tech():
-    sql = """
-        SELECT employer_name, COUNT(*) AS tech_roles
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE
-        GROUP BY employer_name
-        HAVING COUNT(*) > 0
-        ORDER BY tech_roles ASC
-        LIMIT 1;
-    """
-    df = run_sql(sql)
-    render_table(df, "Employer With Fewest Tech Roles")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Interpret this result:\n{df.to_json()}"))
+# Placeholder — next steps will define a function for each tab.
+# ============================================================
+# STEP 2 — ASK ANYTHING (Intents + Analyst Queries)
+# ============================================================
 
+if selected_tab == "Ask Anything":
 
-def answer_entry_level_tech():
-    sql = """
-        SELECT job_title, employer_name, required_education, years_experience
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE AND is_entry_level = TRUE
-        ORDER BY posted_date DESC
-        LIMIT 200;
-    """
-    df = run_sql(sql)
-    render_table(df, "Entry-Level Tech Roles (Most Recent)")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Summarize common requirements:\n{df.to_json()}"))
-
-
-def answer_highest_tech_salary():
-    sql = """
-        SELECT EXTRACT(YEAR FROM posted_date) AS year,
-               MAX(salary_max) AS highest_salary
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE
-        GROUP BY year
-        ORDER BY year;
-    """
-
-    df = run_sql(sql)
-
-    # Use the central analytics response contract
-    render_analytics_response(
-        df=df,
-        question="What is the highest tech salary by year?",
-        gpt_client=client,  # your existing OpenAI client
-        summary_title="Executive Summary",
-        chart_type="auto"
-    )
-
-def answer_lowest_tech_salary():
-    sql = """
-        SELECT EXTRACT(YEAR FROM posted_date) AS year,
-               MIN(salary_min) AS lowest_salary
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE 
-          AND salary_min > 1000
-        GROUP BY year
-        ORDER BY year;
-    """
-    df = run_sql(sql)
-    df["lowest_salary"] = df["lowest_salary"].apply(fmt_currency)
-    render_table(df, "Lowest Tech Salary by Year")
-    render_line(df, "year", "lowest_salary", title="Tech Salary Floor Trend")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Explain lower salary bounds:\n{df.to_json()}"))
-
-
-def answer_avg_tech_salary():
-    sql = """
-        SELECT EXTRACT(YEAR FROM posted_date) AS year,
-               AVG((salary_min + salary_max)/2) AS avg_salary
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE
-        GROUP BY year
-        ORDER BY year;
-    """
-    df = run_sql(sql)
-    df["avg_salary"] = df["avg_salary"].apply(fmt_currency)
-    render_table(df, "Average Tech Salary by Year")
-    render_line(df, "year", "avg_salary", title="Average Tech Salary Trend")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Explain average tech earnings:\n{df.to_json()}"))
-
-
-def answer_tech_salary_trend():
-    sql = """
-        SELECT posted_date,
-               (salary_min + salary_max)/2 AS salary
-        FROM curated.fact_job_posting
-        WHERE is_tech_role = TRUE
-        ORDER BY posted_date;
-    """
-    df = run_sql(sql)
-    df["salary"] = df["salary"].apply(fmt_currency)
-    render_table(df.head(50), "Most Recent Tech Salaries")
-    render_line(df, "posted_date", "salary", title="Tech Salary Trend Over Time")
-    st.markdown("### AI Interpretation")
-    st.write(ask_gpt(f"Interpret salary momentum:\n{df.to_json()}"))
-
-
-###############################################################
-#   ASK ANYTHING TAB
-###############################################################
-
-tab_chat, tab_lfs, tab_wages, tab_jobs, tab_sps = st.tabs(
-    ["💬 Ask Anything", "📊 LFS", "💵 Wages", "📈 Job Postings", "📘 SPS"]
-)
-
-with tab_chat:
-
-    st.header("Ask Any Workforce Question")
+    st.title("Ask Anything")
 
     user_q = st.text_input(
-        "Your question:",
-        placeholder="e.g., What employer posts the most tech roles?",
-        key="ask_anything_q"
+        "Ask a workforce, job, labour, wage, or policy question:",
+        placeholder="e.g., Which employers posted the most tech jobs?"
     )
 
-    if user_q:
+    st.markdown("---")
 
-        # Identify user intent
-        intent = classify_intent(user_q)
-        st.info(f"Detected intent: **{intent}**")
-
-        # Route to correct handler
-        if intent == "employer_most_tech_roles":
-            answer_employer_most_tech()
-            st.stop()
-
-        if intent == "employer_least_tech_roles":
-            answer_employer_least_tech()
-            st.stop()
-
-        if intent == "entry_level_tech_roles":
-            answer_entry_level_tech()
-            st.stop()
-
-        if intent == "highest_tech_salary_by_year":
-            answer_highest_tech_salary()
-            st.stop()
-
-        if intent == "lowest_tech_salary_by_year":
-            answer_lowest_tech_salary()
-            st.stop()
-
-        if intent == "average_tech_salary_by_year":
-            answer_avg_tech_salary()
-            st.stop()
-
-        if intent == "tech_salary_trend":
-            answer_tech_salary_trend()
-            st.stop()
-        else:
-            # GENERAL QUESTION — fallback GPT
-            st.subheader("AI Analysis")
-    
-            # Provide recent sample for context
-            sample = run_sql("""
-                SELECT *
-                FROM curated.fact_job_posting
-                ORDER BY posted_date DESC
-                LIMIT 50;
-            """)
-    
-            ai_answer = ask_gpt(
-                f"User asked: {user_q}\nHere is recent Cayman labour data:\n{sample.to_json(orient='records')}\nProvide an accurate, executive-level answer."
-            )
-    
-            st.write(ai_answer)
-###############################################################
-#  SECTION 3 — LFS TAB (Labour Force Survey)
-###############################################################
-
-with tab_lfs:
-
-    st.header("Labour Force Survey (LFS)")
-
-    ###########################################################
-    # LOAD MOST RECENT LFS DATA
-    ###########################################################
-
-    df_status = run_sql("""
-        SELECT *
-        FROM curated.fact_lfs_overview_status
-        ORDER BY survey_date DESC;
-    """)
-
-    df_participation = run_sql("""
-        SELECT *
-        FROM curated.fact_lfs_participation
-        ORDER BY survey_date DESC;
-    """)
-
-    df_sex = run_sql("""
-        SELECT *
-        FROM curated.fact_lfs_overview_sex
-        ORDER BY survey_date DESC;
-    """)
-
-    # MOST RECENT LFS DATE
-    latest_date = (
-        df_status["survey_date"].max()
-        if not df_status.empty
-        else None
-    )
-
-    if latest_date:
-        st.subheader(f"Latest LFS Survey: **{latest_date.strftime('%B %Y')}**")
-
-    ###########################################################
-    # DISPLAY MOST RECENT OVERVIEW TABLE
-    ###########################################################
-
-    st.subheader("LFS Overview (Most Recent)")
-    latest_status = df_status[df_status["survey_date"] == latest_date]
-    st.dataframe(latest_status, use_container_width=True)
-
-    ###########################################################
-    # KPI CARDS
-    ###########################################################
-
-    st.subheader("Key Metrics")
-
-    col1, col2, col3 = st.columns(3)
-
-    try:
-        employed = latest_status[latest_status["status"] == "employed"]["value"].iloc[0]
-        unemployed = latest_status[latest_status["status"] == "unemployed"]["value"].iloc[0]
-        labour_force = latest_status[latest_status["status"] == "labour_force"]["value"].iloc[0]
-    except:
-        employed = unemployed = labour_force = None
-
-    col1.metric("Employed", f"{employed:,.0f}" if employed else "—")
-    col2.metric("Unemployed", f"{unemployed:,.0f}" if unemployed else "—")
-    col3.metric("Labour Force", f"{labour_force:,.0f}" if labour_force else "—")
-
-    ###########################################################
-    # TREND CHART — STATUS OVER TIME
-    ###########################################################
-
-    if not df_status.empty:
-        fig = px.line(
-            df_status,
-            x="survey_date",
-            y="value",
-            color="status",
-            markers=True,
-            title="LFS Status Trend Over Time",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    ###########################################################
-    # PARTICIPATION RATE TREND
-    ###########################################################
-
-    st.subheader("Labour Force Participation Rates")
-
-    if not df_participation.empty:
-        fig2 = px.line(
-            df_participation,
-            x="survey_date",
-            y="value",
-            color="category",
-            markers=True,
-            title="Participation Rate by Category",
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-
-    ###########################################################
-    # LFS TAB — ASK A QUESTION ABOUT THIS DATA
-    ###########################################################
-
-    st.subheader("Ask a Question About LFS Data")
-
-    lfs_q = st.text_input(
-        "Ask about labour force patterns, participation, or employment trends:",
-        placeholder="e.g., What is the unemployment trend for Caymanians?",
-        key="lfs_question"
-    )
-
-    if lfs_q:
-        snippet = df_status.head(60).to_json(orient="records")
-        analysis = ask_gpt(
-            f"""
-            The user asked about the Labour Force Survey (LFS):
-
-            QUESTION:
-            {lfs_q}
-
-            Here is sample LFS data (status overview, newest first):
-            {snippet}
-
-            Provide an accurate, executive-level analysis using only this dataset.
-            """
-        )
-        st.markdown("### AI Answer")
-        st.write(analysis)
-
-    ###########################################################
-    # LFS TAB — SUMMARIZE DATA
-    ###########################################################
-# AUTO-SUMMARY ON TAB LOAD
-if "auto_lfs_summary" not in st.session_state:
-    combined = pd.concat([df_status, df_participation, df_sex]).head(200)
-    auto_summary = ask_gpt(
-        f"Provide an executive summary of the Cayman LFS using only this data:\n{combined.to_json(orient='records')}"
-    )
-    st.markdown("### AI Summary")
-    st.write(auto_summary)
-    st.session_state["auto_lfs_summary"] = True
-
-    st.subheader("Summarize the Latest LFS Data")
-
-    if st.button("Summarize LFS With AI"):
-        combined = pd.concat([df_status, df_participation, df_sex]).head(200)
-        summary = ask_gpt(
-            f"""
-            Produce an executive summary of the Cayman Islands Labour Force Survey.
-
-            Use ONLY this dataset:
-            {combined.to_json(orient='records')}
-
-            Include:
-            - overall employment trends
-            - unemployment interpretation
-            - participation rate insights
-            - demographic comparisons
-            - any meaningful risks or opportunities
-            - concise and business-ready explanation
-            """
-        )
-
-        st.markdown("### AI Summary")
-        st.write(summary)
-###############################################################
-#  SECTION 4 — OCCUPATIONAL WAGE SURVEY (OWS) TAB
-###############################################################
-
-with tab_wages:
-
-    st.header("Occupational Wage Survey (OWS)")
-
-    ###########################################################
-    # LOAD MOST RECENT WAGE DATA
-    ###########################################################
-
-    df_wages = run_sql("""
-        SELECT *
-        FROM curated.fact_wages
-        ORDER BY survey_date DESC;
-    """)
-
-    if df_wages.empty:
-        st.warning("No wage survey data available.")
+    if not user_q:
+        st.info("Enter a question above to begin.")
         st.stop()
 
-    latest_wage_date = df_wages["survey_date"].max()
+    # ------------------------------------------------------------
+    # INTENT CLASSIFICATION (7 guaranteed intents)
+    # ------------------------------------------------------------
+    def classify_intent(q: str) -> str:
+        ql = q.lower()
 
-    st.subheader(f"Latest Wage Survey: **{latest_wage_date.strftime('%B %Y')}**")
+        if "most tech" in ql or "top tech" in ql:
+            return "employer_most_tech"
+        if "least tech" in ql:
+            return "employer_least_tech"
+        if "entry" in ql and "tech" in ql:
+            return "entry_level_tech"
+        if "highest" in ql and "salary" in ql:
+            return "highest_salary"
+        if "lowest" in ql and "salary" in ql:
+            return "lowest_salary"
+        if "average" in ql and "salary" in ql:
+            return "average_salary"
+        if "trend" in ql and "salary" in ql:
+            return "salary_trend"
 
-    latest_wages = df_wages[df_wages["survey_date"] == latest_wage_date]
+        return "general_query"
 
-    ###########################################################
-    # DISPLAY TABLE
-    ###########################################################
+    intent = classify_intent(user_q)
+    st.write(f"**Detected intent:** `{intent}`")
 
-    st.subheader("Wage Overview (Most Recent)")
-    df_display = latest_wages.copy()
-    df_display["value"] = df_display["value"].apply(fmt_currency)
-    st.dataframe(df_display, use_container_width=True, height=500)
+    # ------------------------------------------------------------
+    # INTENT HANDLERS
+    # ------------------------------------------------------------
 
-    ###########################################################
-    # KPI CARDS
-    ###########################################################
+    # 1. EMPLOYER MOST TECH ROLES
+    if intent == "employer_most_tech":
+        sql = f"""
+        SELECT employer_name, COUNT(*) AS tech_roles
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        GROUP BY employer_name
+        ORDER BY tech_roles DESC
+        LIMIT 10
+        """
+        df = run_sql(sql)
 
-    st.subheader("Key Compensation Metrics")
+        st.subheader("Top Employers for Tech Roles")
+        st.dataframe(df)
 
-    col1, col2, col3 = st.columns(3)
+        bar_chart(df, "employer_name", "tech_roles", "Employers Posting the Most Tech Roles")
 
-    try:
-        highest = latest_wages["value"].max()
-        lowest = latest_wages["value"].min()
-        avg = latest_wages["value"].mean()
-    except:
-        highest = lowest = avg = None
-
-    col1.metric("Highest Earnings", fmt_currency(highest))
-    col2.metric("Average Earnings", fmt_currency(avg))
-    col3.metric("Lowest Earnings", fmt_currency(lowest))
-
-    ###########################################################
-    # BAR CHART — MEAN EARNINGS BY INDUSTRY
-    ###########################################################
-
-    st.subheader("Mean Monthly Earnings by Industry")
-
-    df_mean_industry = run_sql(f"""
-        SELECT subcategory AS industry,
-               value
-        FROM curated.fact_wages
-        WHERE survey_date = '{latest_wage_date}'
-          AND category = 'industry'
-          AND measure_type = 'basic_earnings'
-          AND metric = 'mean'
-        ORDER BY value DESC;
-    """)
-
-    if not df_mean_industry.empty:
-        fig = px.bar(
-            df_mean_industry,
-            x="industry",
-            y="value",
-            title="Mean Industry Earnings",
-        )
-        fig.update_traces(marker_color="#1f77b4")
-        fig.update_layout(xaxis_tickangle=45)
-        st.plotly_chart(fig, use_container_width=True)
-
-    ###########################################################
-    # BOX CHART — INDUSTRY DISTRIBUTION
-    ###########################################################
-
-    st.subheader("Earnings Distribution (Box Plot)")
-
-    df_box = latest_wages.copy()
-    df_box["value"] = df_box["value"]
-    if not df_box.empty:
-        fig_box = px.box(
-            df_box,
-            x="subcategory",
-            y="value",
-            title="Distribution of Earnings",
-        )
-        fig_box.update_layout(xaxis_tickangle=45)
-        st.plotly_chart(fig_box, use_container_width=True)
-
-    ###########################################################
-    # WAGES TAB — ASK A QUESTION ABOUT THIS DATA
-    ###########################################################
-
-    st.subheader("Ask a Question About Wage Data")
-
-    wages_q = st.text_input(
-        "Ask about compensation, high earners, industry comparisons, or trends:",
-        placeholder="e.g., Which industry has the highest average earnings?",
-        key="wages_question"
-    )
-
-    if wages_q:
-        snippet = latest_wages.head(60).to_json(orient="records")
-        analysis = ask_gpt(
-            f"""
-            The user asked a question about Cayman wage levels.
-
-            QUESTION:
-            {wages_q}
-
-            Here is the wage dataset (most recent):
-            {snippet}
-
-            Provide an accurate, executive-level answer.
-            """
-        )
-        st.markdown("### AI Answer")
-        st.write(analysis)
-
-    ###########################################################
-    # WAGES TAB — SUMMARIZE DATA
-    ###########################################################
-# AUTO-SUMMARY — WAGES
-if "auto_wages_summary" not in st.session_state:
-    combined = df_wages[df_wages["survey_date"] == latest_wage_date]
-    auto_wage_summary = ask_gpt(
-        f"Provide an executive Cayman OWS earnings summary using only this data:\n{combined.to_json(orient='records')}"
-    )
-    st.markdown("### AI Summary")
-    st.write(auto_wage_summary)
-    st.session_state["auto_wages_summary"] = True
-
-    st.subheader("Summarize Wage Survey With AI")
-
-    if st.button("Summarize Wages With AI"):
-        combined = df_wages[df_wages["survey_date"] == latest_wage_date]
         summary = ask_gpt(
-            f"""
-            Provide an executive summary of the latest Cayman Occupational Wage Survey.
-
-            Use ONLY this dataset:
-            {combined.to_json(orient='records')}
-
-            Include:
-            - key pay differences
-            - highest and lowest-earning sectors
-            - compensation risks or trends
-            - macro interpretation
-            - workforce implications
-            """
+            f"Question: {user_q}\n\nData:\n{df.to_string()}\n\n"
+            "Write an executive summary using only this data."
         )
         st.markdown("### AI Summary")
         st.write(summary)
-###############################################################
-#  SECTION 5 — JOB POSTINGS TAB + SPS TAB
-###############################################################
-
-###############################################################
-#  JOB POSTINGS TAB
-###############################################################
-
-with tab_jobs:
-
-    st.header("Job Postings Explorer")
-
-    ###########################################################
-    # LOAD MOST RECENT JOB POSTING DATA
-    ###########################################################
-
-    df_jobs = run_sql("""
-        SELECT *
-        FROM curated.fact_job_posting
-        ORDER BY posted_date DESC;
-    """)
-
-    if df_jobs.empty:
-        st.warning("No job posting data available.")
         st.stop()
 
-    latest_date = df_jobs["posted_date"].max()
+    # 2. EMPLOYER LEAST TECH ROLES
+    if intent == "employer_least_tech":
+        sql = f"""
+        SELECT employer_name, COUNT(*) AS tech_roles
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        GROUP BY employer_name
+        ORDER BY tech_roles ASC
+        LIMIT 10
+        """
+        df = run_sql(sql)
 
-    st.subheader(f"Latest Posting Date: **{latest_date}**")
+        st.subheader("Employers Posting the Fewest Tech Roles")
+        st.dataframe(df)
 
-    recent_jobs = df_jobs[df_jobs["posted_date"] >= (latest_date - pd.Timedelta(days=30))]
+        bar_chart(df, "employer_name", "tech_roles", "Employers Posting the Fewest Tech Roles")
 
-    ###########################################################
-    # DISPLAY TABLE — MOST RECENT POSTINGS
-    ###########################################################
-
-    st.subheader("Recent Job Postings (Last 30 Days)")
-
-    df_display = recent_jobs.copy()
-    df_display["salary_min"] = df_display["salary_min"].apply(fmt_currency)
-    df_display["salary_max"] = df_display["salary_max"].apply(fmt_currency)
-
-    st.dataframe(df_display[
-        ["posted_date", "employer_name", "job_title", "industry", "salary_min", "salary_max", "is_tech_role", "is_entry_level"]
-    ], use_container_width=True, height=500)
-
-    ###########################################################
-    # KPI CARDS — HIRING SNAPSHOT
-    ###########################################################
-
-    st.subheader("Hiring Snapshot")
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Total Postings (30 Days)", f"{len(recent_jobs):,}")
-    col2.metric("Tech Roles", f"{recent_jobs['is_tech_role'].sum():,}")
-    col3.metric("Entry-Level Roles", f"{recent_jobs['is_entry_level'].sum():,}")
-
-    ###########################################################
-    # POSTING TREND — LINE CHART
-    ###########################################################
-
-    st.subheader("Posting Trend by Industry")
-
-    df_trend = df_jobs.copy()
-    df_trend["month"] = pd.to_datetime(df_trend["posted_date"]).dt.to_period("M").dt.to_timestamp()
-    df_trend = df_trend.groupby(["month", "industry"]).size().reset_index(name="postings")
-
-    fig = px.line(
-        df_trend,
-        x="month",
-        y="postings",
-        color="industry",
-        title="Monthly Posting Trend by Industry",
-        markers=True
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    ###########################################################
-    # JOBS TAB — ASK A QUESTION ABOUT THIS DATASET
-    ###########################################################
-
-    st.subheader("Ask a Question About Job Postings")
-
-    jobs_q = st.text_input(
-        "Ask about hiring trends, industries, tech jobs, employers, salaries…",
-        placeholder="e.g., Which industries hired the most tech roles recently?",
-        key="jobs_question"
-    )
-
-    if jobs_q:
-        snippet = recent_jobs.head(50).to_json(orient="records")
-        answer = ask_gpt(
-            f"""
-            User asked a question about job postings:
-
-            QUESTION:
-            {jobs_q}
-
-            Here is the recent (last 30 days) job posting data:
-            {snippet}
-
-            Provide an accurate, executive-level answer.
-            """
-        )
-        st.markdown("### AI Answer")
-        st.write(answer)
-
-    ###########################################################
-    # JOBS TAB — SUMMARIZE DATASET WITH AI
-    ###########################################################
-# AUTO-SUMMARY — JOB POSTINGS
-if "auto_jobs_summary" not in st.session_state:
-    auto_jobs = recent_jobs.head(200).to_json(orient='records')
-    auto_jobs_summary = ask_gpt(
-        f"Provide an executive summary of Cayman job postings using only this data:\n{auto_jobs}"
-    )
-    st.markdown("### AI Summary")
-    st.write(auto_jobs_summary)
-    st.session_state["auto_jobs_summary"] = True
-
-    st.subheader("Summarize Job Posting Trends")
-
-    if st.button("Summarize Job Postings With AI"):
         summary = ask_gpt(
-            f"""
-            Provide an executive-level summary of the latest Cayman job postings.
-
-            Use ONLY this dataset:
-            {recent_jobs.head(200).to_json(orient='records')}
-
-            Include:
-            - key hiring industries
-            - employer activity
-            - tech vs non-tech patterns
-            - salary dynamics
-            - entry-level opportunities
-            - monthly trends
-            """
+            f"Question: {user_q}\n\nData:\n{df.to_string()}\n\n"
+            "Write an executive summary using only this data."
         )
         st.markdown("### AI Summary")
         st.write(summary)
+        st.stop()
 
+    # 3. ENTRY-LEVEL TECH ROLES
+    if intent == "entry_level_tech":
+        sql = f"""
+        SELECT job_title, employer_name, experience_bucket, salary_min, salary_max
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        AND experience_bucket = 'entry'
+        LIMIT 50
+        """
+        df = run_sql(sql)
 
-###############################################################
-#  SPS TAB — STRATEGIC POLICY STATEMENT
-###############################################################
+        st.subheader("Entry-Level Tech Roles")
+        st.dataframe(df)
 
-with tab_sps:
+        summary = ask_gpt(
+            f"Question: {user_q}\n\nData:\n{df.to_string()}\n\n"
+            "Write an executive summary focusing on entry-level tech roles."
+        )
+        st.markdown("### AI Summary")
+        st.write(summary)
+        st.stop()
 
-    st.header("Strategic Policy Statement (SPS) — Workforce Insights")
+    # 4. HIGHEST TECH SALARY
+    if intent == "highest_salary":
+        sql = f"""
+        SELECT year, MAX(salary_avg) AS highest_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        GROUP BY year
+        ORDER BY year
+        """
+        df = run_sql(sql)
 
-    ###########################################################
-    # LOAD SPS TEXT
-    ###########################################################
+        st.subheader("Highest Tech Salary by Year")
+        st.dataframe(df)
 
-    df_sps = run_sql("""
-        SELECT *
-        FROM curated.fact_sps_context
-        ORDER BY page DESC;
-    """)
+        line_chart(df, "year", "highest_salary", "Highest Tech Salary by Year")
+
+        summary = ask_gpt(
+            f"User question: {user_q}\nData:\n{df.to_string()}\n"
+            "Write a concise executive-level summary."
+        )
+        st.markdown("### AI Summary")
+        st.write(summary)
+        st.stop()
+
+    # 5. LOWEST TECH SALARY
+    if intent == "lowest_salary":
+        sql = f"""
+        SELECT year, MIN(salary_avg) AS lowest_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        GROUP BY year
+        ORDER BY year
+        """
+        df = run_sql(sql)
+
+        st.subheader("Lowest Tech Salary by Year")
+        st.dataframe(df)
+
+        line_chart(df, "year", "lowest_salary", "Lowest Tech Salary by Year")
+
+        summary = ask_gpt(
+            f"User question: {user_q}\nData:\n{df.to_string()}\n"
+            "Write an executive-level summary."
+        )
+        st.markdown("### AI Summary")
+        st.write(summary)
+        st.stop()
+
+    # 6. AVERAGE TECH SALARY
+    if intent == "average_salary":
+        sql = f"""
+        SELECT year, AVG(salary_avg) AS avg_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        GROUP BY year
+        ORDER BY year
+        """
+        df = run_sql(sql)
+
+        st.subheader("Average Tech Salary by Year")
+        st.dataframe(df)
+
+        line_chart(df, "year", "avg_salary", "Average Tech Salary by Year")
+
+        summary = ask_gpt(
+            f"User question: {user_q}\nData:\n{df.to_string()}\n"
+            "Write an executive-level summary describing trends."
+        )
+        st.markdown("### AI Summary")
+        st.write(summary)
+        st.stop()
+
+    # 7. TECH SALARY TREND
+    if intent == "salary_trend":
+        sql = f"""
+        SELECT year_month, AVG(salary_avg) AS avg_salary
+        FROM {TABLE_JOB_POSTINGS}
+        WHERE is_tech_job = TRUE
+        GROUP BY year_month
+        ORDER BY year_month
+        """
+        df = run_sql(sql)
+
+        st.subheader("Tech Salary Trend Over Time")
+        st.dataframe(df)
+
+        line_chart(df, "year_month", "avg_salary", "Tech Salary Trend")
+
+        summary = ask_gpt(
+            f"User question: {user_q}\nData:\n{df.to_string()}\n"
+            "Write an executive summary focused on salary trends."
+        )
+        st.markdown("### AI Summary")
+        st.write(summary)
+        st.stop()
+
+    # ------------------------------------------------------------
+    # GENERAL ANALYST-GRADE QUERY
+    # ------------------------------------------------------------
+    st.subheader("Analytical Output")
+
+    # Show sample SQL (NOT raw)
+    sample_sql = f"SELECT * FROM {TABLE_JOB_POSTINGS} LIMIT 25;"
+    df_sample = run_sql(sample_sql)
+    st.write(df_sample)
+
+    prompt = f"""
+    User question: {user_q}
+
+    Here is a sample of the Cayman workforce dataset (job postings enriched):
+
+    {df_sample.to_string()}
+
+    Provide a concise, accurate, executive-level analysis grounded ONLY in the data shown.
+    """
+
+    answer = ask_gpt(prompt)
+    st.write(answer)
+# ============================================================
+# STEP 3 — LABOUR FORCE SURVEY (LFS) TAB
+# ============================================================
+
+if selected_tab == "Labour Force Survey":
+
+    st.title("Labour Force Survey — Fall 2024")
+
+    # ------------------------------------------------------------
+    # LOAD DATA
+    # ------------------------------------------------------------
+    df_over = run_sql(f"SELECT * FROM {TABLE_LFS_OVERVIEW}")
+    df_ind = run_sql(f"SELECT * FROM {TABLE_LFS_INDUSTRY}")
+
+    # Some LFS TXT files may not include occupation data
+    try:
+        df_occ = run_sql(f"SELECT * FROM {TABLE_LFS_OCC}")
+        has_occ = not df_occ.empty
+    except:
+        df_occ = pd.DataFrame()
+        has_occ = False
+
+    # ------------------------------------------------------------
+    # KPI SECTION (Overview)
+    # ------------------------------------------------------------
+    st.subheader("Labour Force Overview")
+
+    if df_over.empty:
+        st.warning("No LFS overview data available.")
+    else:
+        col1, col2, col3 = st.columns(3)
+
+        # Labour Force
+        lf = df_over[df_over["metric"].str.contains("Labour Force", case=False)]
+        lf_val = lf["value"].iloc[0] if not lf.empty else "N/A"
+        col1.metric("Labour Force", fmt_int(lf_val))
+
+        # Employment
+        emp = df_over[df_over["metric"].str.contains("Employment", case=False)]
+        emp_val = emp["value"].iloc[0] if not emp.empty else "N/A"
+        col2.metric("Employment", fmt_int(emp_val))
+
+        # Unemployment
+        unemp = df_over[df_over["metric"].str.contains("Unemployment", case=False)]
+        unemp_val = unemp["value"].iloc[0] if not unemp.empty else "N/A"
+        col3.metric("Unemployment", fmt_int(unemp_val))
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # INDUSTRY EMPLOYMENT
+    # ------------------------------------------------------------
+    st.subheader("Employment by Industry")
+
+    if df_ind.empty:
+        st.warning("No LFS industry data found.")
+    else:
+        df_ind["employment"] = df_ind["employment"].astype(float)
+
+        bar_chart(
+            df_ind.sort_values("employment", ascending=False),
+            "industry",
+            "employment",
+            "Employment by Industry"
+        )
+
+        st.dataframe(df_ind)
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # OCCUPATION EMPLOYMENT (Optional)
+    # ------------------------------------------------------------
+    if has_occ:
+        st.subheader("Employment by Occupation")
+
+        df_occ["employment"] = df_occ["employment"].astype(float)
+
+        bar_chart(
+            df_occ.sort_values("employment", ascending=False).head(20),
+            "occupation",
+            "employment",
+            "Top 20 Occupations by Employment"
+        )
+
+        st.dataframe(df_occ)
+    else:
+        st.info("No LFS Occupation data available in this dataset.")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # AI SUMMARY (Overview + Industry)
+    # ------------------------------------------------------------
+    if st.button("Generate AI Summary"):
+        sample_text = f"""
+        LFS Overview:
+        {df_over.head().to_string(index=False)}
+
+        Industry Employment:
+        {df_ind.head(10).to_string(index=False)}
+        """
+
+        summary = ask_gpt(
+            "Provide an accurate, concise, executive-level summary "
+            "of Cayman’s Labour Force using ONLY the data below:\n\n"
+            + sample_text
+        )
+
+        st.markdown("### AI Summary")
+        st.write(summary)
+# ============================================================
+# STEP 4 — WAGES (OWS) TAB
+# ============================================================
+
+if selected_tab == "Wages (OWS)":
+
+    st.title("Occupational Wage Survey — 2023")
+
+    # ------------------------------------------------------------
+    # LOAD WAGE DATA
+    # ------------------------------------------------------------
+    df_wage = run_sql(f"SELECT * FROM {TABLE_WAGES}")
+
+    if df_wage.empty:
+        st.error("No wage data found.")
+        st.stop()
+
+    # Clean numeric fields
+    for col in ["employee_count", "mean", "p10", "p25", "median"]:
+        df_wage[col] = pd.to_numeric(df_wage[col], errors="coerce")
+
+    # ------------------------------------------------------------
+    # KPIs
+    # ------------------------------------------------------------
+    st.subheader("Key Wage Indicators")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Total Occupations Surveyed", fmt_int(len(df_wage)))
+    col2.metric("Average Mean Salary", fmt_ci_dec(df_wage["mean"].mean()))
+    col3.metric("Median of Medians", fmt_ci_dec(df_wage["median"].median()))
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # TOP EARNING OCCUPATIONS
+    # ------------------------------------------------------------
+    st.subheader("Top Paying Occupations (By Mean Salary)")
+
+    top_mean = df_wage.sort_values("mean", ascending=False).head(15)
+    st.dataframe(top_mean)
+
+    bar_chart(top_mean, "occupation", "mean", "Top Paying Occupations — Mean Salary")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # DISTRIBUTION EXPLORER
+    # ------------------------------------------------------------
+    st.subheader("Explore Wage Distribution")
+
+    occupations = df_wage["occupation"].unique()
+    selected_occ = st.selectbox("Choose an occupation", sorted(occupations))
+
+    df_occ = df_wage[df_wage["occupation"] == selected_occ]
+
+    if not df_occ.empty:
+        occ_row = df_occ.iloc[0]
+
+        st.markdown(f"### {selected_occ}")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("P10", fmt_ci_dec(occ_row["p10"]))
+        d2.metric("P25", fmt_ci_dec(occ_row["p25"]))
+        d3.metric("Median", fmt_ci_dec(occ_row["median"]))
+        d4.metric("Mean", fmt_ci_dec(occ_row["mean"]))
+
+        # Visualize distribution
+        dist_df = pd.DataFrame({
+            "Metric": ["P10", "P25", "Median", "Mean"],
+            "Value": [occ_row["p10"], occ_row["p25"], occ_row["median"], occ_row["mean"]],
+        })
+
+        bar_chart(dist_df, "Metric", "Value", f"Wage Distribution — {selected_occ}")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # AI SUMMARY
+    # ------------------------------------------------------------
+    if st.button("Generate AI Summary (Wages)"):
+        sample = df_wage.head(20)
+
+        prompt = (
+            "You are analyzing Cayman’s Occupational Wage Survey (2023). "
+            "Using ONLY the following wage data (occupations + wage distribution metrics), "
+            "write a precise, executive-level summary suitable for senior leadership.\n\n"
+            + sample.to_string()
+        )
+
+        summary = ask_gpt(prompt)
+
+        st.markdown("### AI Summary (Wages)")
+        st.write(summary)
+# ============================================================
+# STEP 5 — SPS TAB (Strategic Policy Statement 2025)
+# ============================================================
+
+if selected_tab == "SPS":
+
+    st.title("Strategic Policy Statement (2025)")
+
+    # ------------------------------------------------------------
+    # LOAD SPS TEXT DATA
+    # ------------------------------------------------------------
+    df_sps = run_sql(f"SELECT * FROM {TABLE_SPS}")
 
     if df_sps.empty:
-        st.warning("No SPS text available.")
+        st.error("No SPS text data found.")
         st.stop()
 
-    ###########################################################
-    # DISPLAY MOST RECENT 200 LINES OF SPS
-    ###########################################################
+    st.markdown("### SPS Document Viewer")
 
-    st.subheader("Most Recent SPS Pages")
-    st.dataframe(df_sps.head(200), use_container_width=True)
-
-    ###########################################################
-    # SPS TAB — ASK A QUESTION
-    ###########################################################
-
-    st.subheader("Ask a Question About SPS Workforce Policy")
-
-    sps_q = st.text_input(
-        "Ask about policy direction, workforce strategy, education, immigration, economic development…",
-        placeholder="e.g., What does the SPS say about digital skills development?",
-        key="sps_question"
+    # ------------------------------------------------------------
+    # SEARCH BAR
+    # ------------------------------------------------------------
+    keyword = st.text_input(
+        "Search SPS text:",
+        placeholder="e.g., workforce, skills, immigration, education"
     )
 
-    if sps_q:
-        snippet = df_sps.head(100).to_json(orient="records")
-        answer = ask_gpt(
-            f"""
-            The user asked a question about the Strategic Policy Statement (SPS):
+    if keyword:
+        df_filtered = df_sps[df_sps["content"].str.contains(keyword, case=False, na=False)]
+        st.write(f"**Matches:** {len(df_filtered)}")
+        st.dataframe(df_filtered)
+    else:
+        st.dataframe(df_sps.head(50))
 
-            QUESTION:
-            {sps_q}
+    st.markdown("---")
 
-            Here is the SPS text dataset:
-            {snippet}
+    # ------------------------------------------------------------
+    # AI SUMMARY OF SPS CONTENT
+    # ------------------------------------------------------------
+    st.subheader("AI Summary")
 
-            Provide a precise, executive-level policy interpretation.
-            """
+    if st.button("Generate SPS Executive Summary"):
+        sample_text = "\n".join(df_sps['content'].head(100).tolist())
+
+        prompt = (
+            "You are summarizing Cayman’s Strategic Policy Statement (2025). "
+            "Use ONLY the text provided below. "
+            "Produce a concise, executive-level summary suitable for senior government officials.\n\n"
+            + sample_text
         )
-        st.markdown("### AI Answer")
-        st.write(answer)
 
-    ###########################################################
-    # SPS TAB — SUMMARIZE DATASET
-    ###########################################################
-# AUTO-SUMMARY — SPS
-if "auto_sps_summary" not in st.session_state:
-    snippet = df_sps.head(200).to_json(orient="records")
-    auto_sps_summary = ask_gpt(
-        f"Provide an executive Cayman SPS workforce policy summary using only this data:\n{snippet}"
-    )
-    st.markdown("### AI Summary")
-    st.write(auto_sps_summary)
-    st.session_state["auto_sps_summary"] = True
+        summary = ask_gpt(prompt)
 
-    st.subheader("Summarize SPS Workforce Direction")
-
-    if st.button("Summarize SPS With AI"):
-        summary = ask_gpt(
-            f"""
-            Provide an executive summary of the SPS workforce, education,
-            immigration, and economic development direction.
-
-            Use ONLY this SPS dataset:
-            {df_sps.head(200).to_json(orient='records')}
-
-            Include:
-            - workforce priorities
-            - education alignment
-            - digital skills development
-            - talent pipeline direction
-            - economic growth implications
-            - policy risks and opportunities
-            """
-        )
-        st.markdown("### AI Summary")
+        st.markdown("### Executive Summary")
         st.write(summary)
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # AI QUESTION ABOUT SPS CONTENT
+    # ------------------------------------------------------------
+    st.subheader("Ask a Question About the SPS")
+
+    user_sps_q = st.text_input(
+        "Ask about priorities, outcomes, risks, or workforce recommendations:",
+        placeholder="e.g., What does the SPS say about workforce readiness?"
+    )
+
+    if user_sps_q:
+        # Provide GPT only with real SPS text to avoid hallucinations
+        context = "\n".join(df_sps['content'].head(300).tolist())
+
+        prompt = (
+            f"User question: {user_sps_q}\n\n"
+            "Use ONLY the SPS 2025 text below. "
+            "Do NOT invent information. Only answer using real content.\n\n"
+            + context
+        )
+
+        answer = ask_gpt(prompt)
+
+        st.markdown("### SPS Answer")
+        st.write(answer)
