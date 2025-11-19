@@ -586,6 +586,10 @@ if selected_tab == "Job Postings Explorer":
 
     st.title("Job Postings Explorer")
 
+    # TEMP DEBUG
+    st.write("DB Check:", run_sql("SELECT MAX(posting_date_clean) FROM fact_job_postings_cleaned"))
+    st.write("Table Count:", run_sql("SELECT COUNT(*) FROM fact_job_postings_cleaned"))
+
     # ------------------------------------------------------------
     # LOAD DATA (Clean Table)
     # ------------------------------------------------------------
