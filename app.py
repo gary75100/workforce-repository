@@ -138,7 +138,7 @@ selected_tab = st.sidebar.radio("Navigation", TABS)
 #  SHARED DATA REFERENCES
 #  These are the NEW tables loaded from your ETL pipeline.
 # ------------------------------------------------------------
-TABLE_JOB_POSTINGS = "fact_job_postings_enriched"
+TABLE_JOB_POSTINGS = "fact_job_postings_cleaned"
 TABLE_LFS_OVERVIEW = "fact_lfs_overview"
 TABLE_LFS_INDUSTRY = "fact_lfs_industry"
 TABLE_LFS_OCC = "fact_lfs_occupation"  # may not exist
