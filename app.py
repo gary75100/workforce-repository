@@ -718,32 +718,53 @@ if selected_tab == "Job Postings Explorer":
         bar_chart(df_month, "year_month", "postings", "Postings per Month")
 
     # ===========================
-    # ICT ANALYTICS (WORC)
+    # ICT ANALYSIS (FIXED)
     # ===========================
-    st.markdown("<h4 class='section-header'>ICT Analysis</h4>", unsafe_allow_html=True)
-
-    df_ict = df[df["fixed_is_tech_job"] == True]
-
+    st.markdown("### ICT Analysis (Tech Futures Week)")
+    
+    df_ict = filtered[filtered["fixed_is_tech_job"] == True]
+    
+    # Year windows: correct now that dates & buckets work
     def ict_window(start_year):
         start = pd.Timestamp(f"{start_year}-10-01")
         end = pd.Timestamp(f"{start_year+1}-10-01")
         return df_ict[(df_ict["posting_date_clean"] >= start) &
                       (df_ict["posting_date_clean"] < end)].shape[0]
-
+    
     ranges = [2024, 2023, 2022, 2021]
-    ict_rows = [(f"Oct {y} – Oct {y+1}", ict_window(y)) for y in ranges]
-    df_ict_years = pd.DataFrame(ict_rows, columns=["Period", "ICT Roles"])
-
+    df_ict_years = pd.DataFrame([(f"Oct {y} – Oct {y+1}", ict_window(y)) for y in ranges],
+                                columns=["Period", "ICT Roles"])
     st.dataframe(df_ict_years)
-
-    # ICT Entry & Mid
+    
+    # Entry / Mid / Senior — FIXED because bucket parser now works
     df_ict_2025 = df_ict[
         (df_ict["posting_date_clean"] >= pd.Timestamp("2024-10-01")) &
         (df_ict["posting_date_clean"] < pd.Timestamp("2025-10-01"))
     ]
+    
+    entry_count = df_ict_2025[df_ict_2025["experience_bucket"] == "entry"].shape[0]
+    mid_count   = df_ict_2025[df_ict_2025["experience_bucket"] == "mid"].shape[0]
+    senior_count = df_ict_2025[df_ict_2025["experience_bucket"] == "senior"].shape[0]
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("ICT Entry-Level (1–2 yrs)", entry_count)
+    col2.metric("ICT Mid-Level (3–4 yrs)", mid_count)
+    col3.metric("ICT Senior (5+ yrs)", senior_count)
 
-    st.metric("ICT Entry-Level (1–2 yrs)", df_ict_2025[df_ict_2025["experience_bucket"] == "entry"].shape[0])
-    st.metric("ICT Mid-Level (3–4 yrs)", df_ict_2025[df_ict_2025["experience_bucket"] == "mid"].shape[0])
+    # ===========================
+    # TOP EMPLOYERS (FILTERED)
+    # ===========================
+    st.markdown("### Top Employers (Filtered)")
+    
+    top_emp = (
+        filtered.groupby("employer_name")
+        .size()
+        .reset_index(name="postings")
+        .sort_values("postings", ascending=False)
+        .head(10)
+    )
+    
+    st.dataframe(top_emp)
 
     # ===========================
     # TOP EMPLOYERS BY SECTOR
