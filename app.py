@@ -238,45 +238,45 @@ if selected_tab == "Ask Anything":
     # INTENT ROUTE: HIGHEST SALARY
     # ------------------------
     if intent == "high_salary":
-    df = run_sql(f"""
-        SELECT 
-            year,
-            MAX((salary_min + salary_max) / 2) AS max_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
-        GROUP BY year
-        ORDER BY year
-    """)
+        df = run_sql(f"""
+            SELECT 
+                year,
+                MAX((salary_min + salary_max) / 2) AS max_salary
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
+            GROUP BY year
+            ORDER BY year
+        """)
         show_results(df, "line", "year", "max_salary", "Highest Tech Salaries by Year")
 
     # ------------------------
     # INTENT ROUTE: LOWEST SALARY
     # ------------------------
     elif intent == "low_salary":
-    df = run_sql(f"""
-        SELECT 
-            year,
-            MIN((salary_min + salary_max) / 2) AS min_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
-        GROUP BY year
-        ORDER BY year
-    """)
+        df = run_sql(f"""
+            SELECT 
+                year,
+                MIN((salary_min + salary_max) / 2) AS min_salary
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
+            GROUP BY year
+            ORDER BY year
+        """)
         show_results(df, "line", "year", "min_salary", "Lowest Tech Salaries by Year")
 
     # ------------------------
     # INTENT ROUTE: AVERAGE SALARY
     # ------------------------
     elif intent == "avg_salary":
-    df = run_sql(f"""
-        SELECT 
-            year,
-            AVG((salary_min + salary_max) / 2) AS avg_salary
-        FROM {TABLE_JOB_POSTINGS}
-        WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
-        GROUP BY year
-        ORDER BY year
-    """)
+        df = run_sql(f"""
+            SELECT 
+                year,
+                AVG((salary_min + salary_max) / 2) AS avg_salary
+            FROM {TABLE_JOB_POSTINGS}
+            WHERE salary_min IS NOT NULL AND salary_max IS NOT NULL
+            GROUP BY year
+            ORDER BY year
+        """)
         show_results(df, "line", "year", "avg_salary", "Average Tech Salaries by Year")
 
     # ------------------------
