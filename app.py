@@ -159,6 +159,29 @@ def ask_gpt(prompt, model="gpt-4o-mini"):
     except Exception as e:
         return f"GPT Error: {str(e)}"
 
+# ============================================================
+# SECTION-SPECIFIC AI ANALYSIS WRAPPER
+# ============================================================
+def ask_ai_section(prompt, data_sample, role_prompt):
+    full_prompt = f"""
+ROLE:
+{role_prompt}
+
+USER QUESTION:
+{prompt}
+
+DATA SAMPLE (USE ONLY THIS):
+{data_sample.to_string(index=False)}
+
+INSTRUCTIONS:
+- Base your answer strictly on the dataset above.
+- Do not use outside knowledge unless unavoidable.
+- Be concise, factual, and Cayman-focused.
+- Never hallucinate missing data.
+- Identify patterns, trends, or anomalies only if visible.
+""".strip()
+
+    return ask_gpt(full_prompt)
 
 # ------------------------------------------------------------
 #  REUSABLE CHART BUILDERS
@@ -636,9 +659,31 @@ if selected_tab == "SPS":
 # ============================================================
 
 if selected_tab == "Job Postings Explorer":
-
+    
     st.title("Job Postings Explorer")
     st.write("")  # spacing
+   
+    # ============================================================
+    # AI ROLE PROMPT FOR JOB POSTINGS EXPLORER
+    # ============================================================
+    JOB_EXPLORER_PROMPT = """
+You are a Cayman workforce intelligence analyst with more than 20 years 
+of experience studying hiring patterns, job postings, employer movement, 
+skill demand, and sector-level labor dynamics in the Cayman Islands. 
+You have produced workforce insights for WORC, the Ministry of Labour, 
+and multiple C-Suite audiences.
+
+Your expertise includes:
+- Cayman labor market structure
+- ICT job classification and tech hiring trends
+- Wage patterns and salary clustering by sector
+- Caymanian vs non-Caymanian hiring behavior
+- Seasonal hiring cycles in Cayman
+- Employer and industry demand patterns
+- Senior, mid, and entry-level segmentation
+
+Answer with precision, data discipline, and relevance to the filtered dataset.
+"""
 
     # ===========================
     # HOW TO USE (EXPANDER) — FIXED
@@ -773,7 +818,27 @@ Ask any question in natural language — AI will summarize the trends based only
 
     if not df_month.empty:
         bar_chart(df_month, "year_month", "postings", "Postings per Month")
+    # ============================================================
+    # AI ROLE PROMPT FOR ICT ANALYSIS
+    # ============================================================
+    ICT_PROMPT = """
+You are a Cayman Islands ICT labor market specialist with deep expertise 
+in analyzing technology job postings, skill trends, employer hiring patterns, 
+and year-over-year ICT demand. You understand ICT classification rules in the 
+Cayman context and are fluent in WORC reporting needs.
 
+Your expertise includes:
+- ICT job classification (software, IT, data, engineering, cyber, cloud)
+- Tech sector hiring patterns and employer behavior
+- Entry (1–2 yrs), Mid (3–4 yrs), Senior (5+ yrs) segmentation
+- Year-over-year (Oct to Oct) ICT job movement
+- Salary patterns and skill signals in tech jobs
+- Sector-level ICT demand (Finance, Tech, Public Sector, etc.)
+
+All insights must be based ONLY on the ICT subset provided.
+Answer with clarity, precision, and executive-grade relevance.
+"""
+    
     # ===========================
     # ICT ANALYSIS (FIXED)
     # ===========================
@@ -889,30 +954,39 @@ Ask any question in natural language — AI will summarize the trends based only
         st.write("No salary data available for this filter.")
 
 
-
-   # ===========================
-   # ASK AI ABOUT THESE JOBS (IMPROVED)
-   # ===========================
+    # ============================================================
+    # ASK AI ABOUT THESE JOBS (INTENT-AWARE + ROLE-AWARE)
+    # ============================================================
     st.markdown("### Ask AI About These Jobs")
-    
+
     user_q = st.text_input("Ask a question about the filtered postings:")
-    
+
     if user_q:
-        sample = filtered.head(100)
-    
-        prompt = f"""
-        User question: {user_q}
-    
-        Use ONLY the filtered dataset provided below.
-    
-        {sample.to_string(index=False)}
-    
-        Provide:
-        - a concise executive-grade summary
-        - patterns or anomalies
-        - any sector or skill signals
-        - salary movement (if visible)
-        - hiring intensity indicators
-        """
-    
-        st.write(ask_gpt(prompt))
+
+        # --- INTENT DETECTION: Should AI restrict to ICT roles? ---
+        q = user_q.lower()
+        tech_terms = ["tech", "ict", "it ", "it job", "technology", "software",
+                      "developer", "computer", "engineer", "cyber"]
+
+        # If user is asking about ICT, force ICT subset
+        if any(t in q for t in tech_terms):
+            ai_df = filtered[filtered["fixed_is_tech_job"] == True]
+        else:
+            ai_df = filtered
+
+        # Protect against empty ICT datasets
+        if ai_df.empty:
+            st.warning("No matching job postings found in this timeframe for your question.")
+        sample = ai_df.head(100)
+
+        # --- CALL THE SECTION-SPECIFIC ANALYST ---
+        ai_response = ask_ai_section(
+            user_q,
+            sample,
+            JOB_EXPLORER_PROMPT
+        )
+
+        st.markdown("### Executive Summary")
+        st.write(ai_response)
+
+   
