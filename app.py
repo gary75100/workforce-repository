@@ -801,17 +801,21 @@ if selected_tab == "Job Postings Explorer":
     st.dataframe(top_titles)
 
     # ===========================
-    # SALARY HISTOGRAM (FIXED)
+    # SALARY HISTOGRAM (CLEANED)
     # ===========================
     st.markdown("### Salary Distribution")
     
-    hist_df = filtered[filtered["salary_avg"].notna()]
+    hist_df = filtered[filtered["salary_avg"].notna()].copy()
+    
     if not hist_df.empty:
+        # Cap ridiculous outliers
+        hist_df["salary_capped"] = hist_df["salary_avg"].clip(upper=250000)
+    
         fig = px.histogram(
             hist_df,
-            x="salary_avg",
-            nbins=25,
-            title="Salary Distribution",
+            x="salary_capped",
+            nbins=40,
+            title="Salary Distribution (Capped at CI$250,000)",
         )
     
         fig.update_layout(
@@ -820,9 +824,12 @@ if selected_tab == "Job Postings Explorer":
             bargap=0.05,
         )
     
-        fig.update_xaxes(tickformat=",")
+        fig.update_xaxes(tickformat=",.0f")
     
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write("No salary data available for this filter.")
+
 
    # ===========================
    # ASK AI ABOUT THESE JOBS (IMPROVED)
