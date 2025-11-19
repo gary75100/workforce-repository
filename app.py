@@ -33,6 +33,36 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+# ============================================================
+# GLOBAL UI POLISH
+# ============================================================
+
+st.markdown("""
+<style>
+/* KPI cards */
+div[data-testid="metric-container"] {
+    background-color: #F8F9FA;
+    border: 1px solid #E0E0E0;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 10px;
+}
+
+/* Reduce table padding */
+.dataframe th {
+    font-size: 13px !important;
+}
+.dataframe td {
+    font-size: 13px !important;
+}
+
+/* Section spacing */
+.section-header {
+    margin-top: 30px;
+    margin-bottom: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ------------------------------------------------------------
 #  DATABASE LOADER (from db_loader.py)
@@ -586,20 +616,14 @@ if selected_tab == "SPS":
         st.markdown("### SPS Answer")
         st.write(answer)
 # ============================================================
-# JOB POSTINGS EXPLORER — PRODUCTION FIX (Aligned With Design)
+# JOB POSTINGS EXPLORER — ENHANCED ICT + WORKFORCE DASHBOARD
 # ============================================================
 
 if selected_tab == "Job Postings Explorer":
 
     st.title("Job Postings Explorer")
 
-    # TEMP DEBUG
-    st.write("DB Check:", run_sql("SELECT MAX(posting_date_clean) FROM fact_job_postings_cleaned"))
-    st.write("Table Count:", run_sql("SELECT COUNT(*) FROM fact_job_postings_cleaned"))
-
-    # ------------------------------------------------------------
-    # LOAD DATA (Clean Table)
-    # ------------------------------------------------------------
+    # Load data
     df = run_sql(f"""
         SELECT 
             posting_date_clean,
@@ -609,7 +633,7 @@ if selected_tab == "Job Postings Explorer":
             industry_vertical,
             salary_min,
             salary_max,
-            COALESCE((salary_min + salary_max) / 2, NULL) AS salary_avg,
+            (salary_min + salary_max)/2 AS salary_avg,
             experience_bucket,
             fixed_is_tech_job
         FROM {TABLE_JOB_POSTINGS}
@@ -617,24 +641,12 @@ if selected_tab == "Job Postings Explorer":
         ORDER BY posting_date_clean DESC
     """)
 
-    if df.empty:
-        st.error("No job posting data available.")
-        st.stop()
-
-    # ------------------------------------------------------------
-    # PARSE DATES (CRITICAL FIX)
-    # ------------------------------------------------------------
-    df["posting_date_clean"] = pd.to_datetime(df["posting_date_clean"], errors="coerce")
-    df = df[df["posting_date_clean"].notna()]
-
-    # ------------------------------------------------------------
-    # RECOMPUTE year_month (CRITICAL FIX)
-    # ------------------------------------------------------------
+    df["posting_date_clean"] = pd.to_datetime(df["posting_date_clean"])
     df["year_month"] = df["posting_date_clean"].dt.to_period("M").astype(str)
 
-    # ------------------------------------------------------------
-    # TIME RANGE SELECTOR (UX REQUIREMENT)
-    # ------------------------------------------------------------
+    # ===========================
+    # TIME RANGE FILTER
+    # ===========================
     st.subheader("Time Range")
     range_choice = st.radio(
         "Select timeframe:",
@@ -652,20 +664,19 @@ if selected_tab == "Job Postings Explorer":
         df = df[df["posting_date_clean"] >= today - pd.Timedelta(days=180)]
     elif range_choice == "Last 12 months":
         df = df[df["posting_date_clean"] >= today - pd.Timedelta(days=365)]
-    else:
-        pass
 
-    # ------------------------------------------------------------
+    # ===========================
     # FILTERS
-    # ------------------------------------------------------------
+    # ===========================
     with st.expander("Filters"):
         industry_opt = ["All"] + sorted(df["industry"].dropna().unique())
         vertical_opt = ["All"] + sorted(df["industry_vertical"].dropna().unique())
         selected_industry = st.selectbox("Industry (WORC)", industry_opt)
-        selected_vertical = st.selectbox("Vertical Sector (Group)", vertical_opt)
+        selected_vertical = st.selectbox("Vertical Sector", vertical_opt)
         tech_only = st.selectbox("ICT Roles Only?", ["No", "Yes"])
 
     filtered = df.copy()
+
     if selected_industry != "All":
         filtered = filtered[filtered["industry"] == selected_industry]
 
@@ -675,29 +686,26 @@ if selected_tab == "Job Postings Explorer":
     if tech_only == "Yes":
         filtered = filtered[filtered["fixed_is_tech_job"] == True]
 
-    # ------------------------------------------------------------
-    # METRICS
-    # ------------------------------------------------------------
-    st.subheader(f"Showing {len(filtered):,} job postings")
+    # ===========================
+    # SUMMARY KPIs
+    # ===========================
+    st.markdown("<h4 class='section-header'>Summary</h4>", unsafe_allow_html=True)
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(
-    "Avg Salary",
-    fmt_ci_dec(((filtered["salary_min"] + filtered["salary_max"]) / 2).mean())
-)
-    col2.metric("ICT Role %", f"{(filtered['fixed_is_tech_job'].mean() * 100):.1f}%")
-    col3.metric("Industries", filtered["industry"].nunique())
-    col4.metric("Vertical Sectors", filtered["industry_vertical"].nunique())
+    col1.metric("Postings", f"{len(filtered):,}")
+    col2.metric("Avg Salary", fmt_ci_dec(filtered["salary_avg"].mean()))
+    col3.metric("ICT Role %", f"{(filtered['fixed_is_tech_job'].mean() * 100):.1f}%")
+    col4.metric("Industries", filtered["industry"].nunique())
 
-    # ------------------------------------------------------------
+    # ===========================
     # DATA TABLE
-    # ------------------------------------------------------------
-    st.dataframe(filtered.head(250))
+    # ===========================
+    st.dataframe(filtered.head(300))
 
-    # ------------------------------------------------------------
-    # TREND CHART (FILTERED DATA ONLY — FIXED)
-    # ------------------------------------------------------------
-    st.subheader("Job Posting Volume (Filtered Data)")
+    # ===========================
+    # TREND CHART — FILTERED
+    # ===========================
+    st.markdown("<h4 class='section-header'>Posting Trend</h4>", unsafe_allow_html=True)
 
     df_month = (
         filtered.groupby("year_month")
@@ -707,89 +715,81 @@ if selected_tab == "Job Postings Explorer":
     )
 
     if not df_month.empty:
-        line_chart(df_month, "year_month", "postings", "Filtered Job Posting Volume Over Time")
+        bar_chart(df_month, "year_month", "postings", "Postings per Month")
 
-    # ------------------------------------------------------------
-    # ICT ANALYSIS — TECH FUTURES WEEK REQUIREMENTS (DYNAMIC)
-    # ------------------------------------------------------------
+    # ===========================
+    # ICT ANALYTICS (WORC)
+    # ===========================
+    st.markdown("<h4 class='section-header'>ICT Analysis</h4>", unsafe_allow_html=True)
 
-    st.subheader("ICT Analysis (Tech Futures Week)")
+    df_ict = df[df["fixed_is_tech_job"] == True]
 
-    df_ict = df[df["fixed_is_tech_job"] == True].copy()
-
-    def ict_count(start_year):
+    def ict_window(start_year):
         start = pd.Timestamp(f"{start_year}-10-01")
         end = pd.Timestamp(f"{start_year+1}-10-01")
-        return df_ict[
-            (df_ict["posting_date_clean"] >= start) &
-            (df_ict["posting_date_clean"] < end)
-        ].shape[0]
+        return df_ict[(df_ict["posting_date_clean"] >= start) &
+                      (df_ict["posting_date_clean"] < end)].shape[0]
 
-    years = [2024, 2023, 2022, 2021]
-    ict_rows = [(f"Oct {y} – Oct {y+1}", ict_count(y)) for y in years]
+    ranges = [2024, 2023, 2022, 2021]
+    ict_rows = [(f"Oct {y} – Oct {y+1}", ict_window(y)) for y in ranges]
     df_ict_years = pd.DataFrame(ict_rows, columns=["Period", "ICT Roles"])
+
     st.dataframe(df_ict_years)
 
-    # Entry-level (1–2 yrs)
-    entry_count = df_ict[
-        (df_ict["experience_bucket"] == "entry") &
+    # ICT Entry & Mid
+    df_ict_2025 = df_ict[
         (df_ict["posting_date_clean"] >= pd.Timestamp("2024-10-01")) &
         (df_ict["posting_date_clean"] < pd.Timestamp("2025-10-01"))
-    ].shape[0]
+    ]
 
-    # Mid-level (3–4 yrs)
-    mid_count = df_ict[
-        (df_ict["experience_bucket"] == "mid") &
-        (df_ict["posting_date_clean"] >= pd.Timestamp("2024-10-01")) &
-        (df_ict["posting_date_clean"] < pd.Timestamp("2025-10-01"))
-    ].shape[0]
+    st.metric("ICT Entry-Level (1–2 yrs)", df_ict_2025[df_ict_2025["experience_bucket"] == "entry"].shape[0])
+    st.metric("ICT Mid-Level (3–4 yrs)", df_ict_2025[df_ict_2025["experience_bucket"] == "mid"].shape[0])
 
-    st.metric("ICT Entry-Level (1–2 yrs)", entry_count)
-    st.metric("ICT Mid-Level (3–4 yrs)", mid_count)
+    # ===========================
+    # TOP EMPLOYERS BY SECTOR
+    # ===========================
+    st.markdown("<h4 class='section-header'>Top Employers by Sector</h4>", unsafe_allow_html=True)
 
-    # ------------------------------------------------------------
-    # AI SUMMARY (FIXED GPT ENGINE)
-    # ------------------------------------------------------------
-    st.subheader("AI Summary")
+    selected_sector = st.selectbox("Select Vertical Sector", sorted(df["industry_vertical"].dropna().unique()))
+    df_sec = df[df["industry_vertical"] == selected_sector]
 
-    if st.button("Generate AI Summary of ICT Trends"):
+    top_emp = df_sec.groupby("employer_name").size().reset_index(name="postings").sort_values("postings", ascending=False).head(10)
+    st.dataframe(top_emp)
+
+    # ===========================
+    # TOP JOB TITLES
+    # ===========================
+    st.markdown("<h4 class='section-header'>Top Job Titles</h4>", unsafe_allow_html=True)
+
+    top_titles = filtered.groupby("job_title").size().reset_index(name="postings").sort_values("postings", ascending=False).head(10)
+    st.dataframe(top_titles)
+
+    # ===========================
+    # SALARY HISTOGRAM
+    # ===========================
+    st.markdown("<h4 class='section-header'>Salary Distribution</h4>", unsafe_allow_html=True)
+
+    hist_df = filtered[filtered["salary_avg"].notna()]
+    if not hist_df.empty:
+        fig = px.histogram(hist_df, x="salary_avg", nbins=20, title="Salary Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ===========================
+    # ASK AI ABOUT FILTERED DATA
+    # ===========================
+    st.markdown("<h4 class='section-header'>Ask AI About These Jobs</h4>", unsafe_allow_html=True)
+
+    user_q = st.text_input("Ask a question about this data:")
+    if user_q:
+        sample = filtered.head(75)
         prompt = f"""
-        Provide an executive-grade analysis of Cayman ICT job postings.
+        User question: {user_q}
 
-        Timeframe: {range_choice}
+        ONLY use the filtered data provided below:
 
-        Filtered Sample:
-        {filtered.head(50).to_string(index=False)}
-
-        ICT Role Counts (12-month windows):
-        {df_ict_years.to_string(index=False)}
-
-        ICT Entry-Level (1–2 yrs): {entry_count}
-        ICT Mid-Level (3–4 yrs): {mid_count}
-
-        Only use the data provided. Be concise and analytical.
-        """
-        st.write(ask_gpt(prompt))
-
-    # ------------------------------------------------------------
-    # ASK AI ABOUT THESE POSTINGS (NEW REQUIREMENT)
-    # ------------------------------------------------------------
-    st.subheader("Ask AI About These Job Postings")
-
-    user_postings_q = st.text_input(
-        "Ask a question about the filtered postings:",
-        placeholder="e.g., Which employers hired most ICT roles in the last 90 days?"
-    )
-
-    if user_postings_q:
-        sample = filtered.head(50)
-        prompt = f"""
-        User question: {user_postings_q}
-
-        Use ONLY the following job posting data (filtered):
         {sample.to_string(index=False)}
 
-        Provide a concise, executive-level analysis suitable for Cayman regulators.
+        Provide a concise executive-grade analysis.
         """
-        st.write(ask_gpt(prompt))
 
+        st.write(ask_gpt(prompt))
