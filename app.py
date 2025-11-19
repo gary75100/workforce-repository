@@ -11,10 +11,22 @@ import plotly.graph_objects as go
 from pathlib import Path
 from typing import Any, Optional
 import time
-import openai
 import os
 import requests
 import json
+
+from openai import OpenAI     # <-- NEW SDK
+
+# ============================================================
+# OPENAI CLIENT INITIALIZATION (REQUIRED FOR GPT)
+# ============================================================
+from openai import OpenAI
+
+if "OPENAI_API_KEY" in st.secrets:
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+else:
+    st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+    st.stop()
 
 # ------------------------------------------------------------
 #  STREAMLIT CONFIG
@@ -105,16 +117,18 @@ def fmt_int(value: Any) -> str:
     except:
         return value
 
-# ------------------------------------------------------------
-#  GPT ENGINE — FULLY CONTROLLED (NO HALLUCINATIONS)
-# ------------------------------------------------------------
+# ============================================================
+# OPENAI CLIENT INITIALIZATION
+# ============================================================
+from openai import OpenAI
+
 if "OPENAI_API_KEY" in st.secrets:
-    openai.api_key = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 else:
     st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
     st.stop()
 
-MODEL = "gpt-4o-mini"  # fast, cheap, accurate
+MODEL = "gpt-4o-mini"
 
 def ask_gpt(prompt, model="gpt-4o-mini"):
     """
