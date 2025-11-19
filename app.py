@@ -767,6 +767,21 @@ if selected_tab == "Job Postings Explorer":
     st.dataframe(top_emp)
 
     # ===========================
+    # TOP JOB TITLES (FILTERED)
+    # ===========================
+    st.markdown("### Top Job Titles (Filtered)")
+    
+    top_titles = (
+        filtered.groupby("job_title")
+        .size()
+        .reset_index(name="postings")
+        .sort_values("postings", ascending=False)
+        .head(10)
+    )
+    
+    st.dataframe(top_titles)
+
+    # ===========================
     # TOP EMPLOYERS BY SECTOR
     # ===========================
     st.markdown("<h4 class='section-header'>Top Employers by Sector</h4>", unsafe_allow_html=True)
@@ -809,22 +824,29 @@ if selected_tab == "Job Postings Explorer":
     
         st.plotly_chart(fig, use_container_width=True)
 
-    # ===========================
-    # ASK AI ABOUT FILTERED DATA
-    # ===========================
-    st.markdown("<h4 class='section-header'>Ask AI About These Jobs</h4>", unsafe_allow_html=True)
-
-    user_q = st.text_input("Ask a question about this data:")
+   # ===========================
+   # ASK AI ABOUT THESE JOBS (IMPROVED)
+   # ===========================
+    st.markdown("### Ask AI About These Jobs")
+    
+    user_q = st.text_input("Ask a question about the filtered postings:")
+    
     if user_q:
-        sample = filtered.head(75)
+        sample = filtered.head(100)
+    
         prompt = f"""
         User question: {user_q}
-
-        ONLY use the filtered data provided below:
-
+    
+        Use ONLY the filtered dataset provided below.
+    
         {sample.to_string(index=False)}
-
-        Provide a concise executive-grade analysis.
+    
+        Provide:
+        - a concise executive-grade summary
+        - patterns or anomalies
+        - any sector or skill signals
+        - salary movement (if visible)
+        - hiring intensity indicators
         """
-
+    
         st.write(ask_gpt(prompt))
